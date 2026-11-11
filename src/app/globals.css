@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-[#F8F9FE] text-[#191C20] dark:bg-[#111318] dark:text-[#E2E2E9] antialiased transition-colors duration-200;
+  }
+}
+
+.book-spine-effect {
+  position: relative;
+}
+.book-spine-effect::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 14px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.2) 0%, rgba(0,0,0,0.2) 35%, rgba(255,255,255,0.15) 60%, rgba(0,0,0,0.3) 100%);
+  pointer-events: none;
+  z-index: 10;
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+
+.reader-theme-paper {
+  background-color: #FAF8F5;
+  color: #242426;
+}
+.reader-theme-sepia {
+  background-color: #F4ECD8;
+  color: #382E1E;
+}
+.reader-theme-night {
+  background-color: #16171D;
+  color: #E2E2E9;
+}
+.reader-theme-forest {
+  background-color: #121E1A;
+  color: #D3E4DB;
+}
