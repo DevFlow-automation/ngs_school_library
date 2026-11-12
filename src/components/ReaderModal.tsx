@@ -5,7 +5,7 @@ import { useReadingStore } from '@/store/useReadingStore';
 import { BOOKS } from '@/data/books';
 import { 
   ArrowLeft, Sliders, Bookmark, Search, 
-  ChevronLeft, ChevronRight, CheckCircle2
+  ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X
 } from 'lucide-react';
 import { ReaderTheme } from '@/types/book';
 
@@ -30,6 +30,7 @@ export const ReaderModal: React.FC = () => {
   } = useReadingStore();
 
   const [showSettings, setShowSettings] = useState(false);
+  const [showMobileToc, setShowMobileToc] = useState(false);
   const [currentPage, setCurrentPage] = useState(0);
   const [chapterSearch, setChapterSearch] = useState('');
   const textScrollRef = useRef<HTMLDivElement>(null);
@@ -75,22 +76,20 @@ export const ReaderModal: React.FC = () => {
   const totalChapters = book?.chapters?.length || 0;
   const totalPages = pages.length;
 
-  // Восстанавливаем сохраненную страницу при открытии книги
   useEffect(() => {
     if (activeBookId) {
       const savedPage = readingProgress[activeBookId]?.pageIndex || 0;
       setCurrentPage(savedPage < totalPages ? savedPage : 0);
+      setShowMobileToc(false);
     }
   }, [activeBookId]);
 
-  // Скролл вверх при смене страницы или главы
   useEffect(() => {
     if (textScrollRef.current) {
       textScrollRef.current.scrollTo({ top: 0, behavior: 'smooth' });
     }
   }, [currentPage, activeChapterIndex]);
 
-  // Сохраняем прогресс чтения (и отправляем в Supabase, если ученик вошел)
   useEffect(() => {
     if (activeBookId && book && totalChapters > 0) {
       saveProgress(activeBookId, activeChapterIndex, currentPage, totalChapters, totalPages);
@@ -115,28 +114,38 @@ export const ReaderModal: React.FC = () => {
   const handleSelectChapter = (idx: number) => {
     setChapterIndex(idx);
     setCurrentPage(0);
+    setShowMobileToc(false);
   };
 
   return (
     <div className={`fixed inset-0 z-50 flex flex-col bg-white dark:bg-[#16171D] select-none transition-colors reader-theme-${readerTheme}`}>
       
       {/* Верхний тулбар */}
-      <header className="h-14 px-4 sm:px-6 flex items-center justify-between border-b border-current/10 shrink-0 bg-white/70 dark:bg-black/30 backdrop-blur-md z-30">
-        <div className="flex items-center gap-3">
+      <header className="h-14 px-3 sm:px-6 flex items-center justify-between border-b border-current/10 shrink-0 bg-white/80 dark:bg-black/30 backdrop-blur-md z-30 gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <button 
             onClick={closeReader}
-            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors shrink-0"
             title="Закрыть книгу"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
+
+          {/* Кнопка вызова оглавления на мобильном */}
+          <button
+            onClick={() => setShowMobileToc(true)}
+            className="md:hidden px-2.5 py-1.5 rounded-xl bg-black/5 dark:bg-white/10 text-xs font-bold flex items-center gap-1 shrink-0"
+          >
+            <ListFilter className="w-4 h-4" />
+            <span>Главы</span>
+          </button>
           
-          <div className="text-xs font-bold truncate max-w-xs sm:max-w-md">
-            {book.title} • <span className="opacity-70 font-normal">{book.author}</span>
+          <div className="text-xs font-bold truncate">
+            {book.title} <span className="hidden sm:inline opacity-70 font-normal">• {book.author}</span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 shrink-0">
           <button 
             onClick={() => setShowSettings(!showSettings)}
             className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
@@ -156,14 +165,32 @@ export const ReaderModal: React.FC = () => {
       </header>
 
       {/* Сайдбар + Страница */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative">
         
-        {/* Сайдбар со списком глав */}
-        <aside className="w-64 sm:w-72 md:w-80 border-r border-current/10 bg-black/[0.02] dark:bg-white/[0.02] flex flex-col shrink-0">
+        {/* Затемнение под шторкой на мобильном */}
+        {showMobileToc && (
+          <div 
+            onClick={() => setShowMobileToc(false)}
+            className="fixed inset-0 bg-black/50 z-30 md:hidden"
+          />
+        )}
+
+        {/* Сайдбар со списком глав (шторка на телефоне, колонка на ПК) */}
+        <aside className={`
+          fixed md:static inset-y-0 left-0 z-40 w-72 md:w-72 lg:w-80 
+          border-r border-current/10 bg-white dark:bg-[#1A1C23] md:bg-black/[0.02] md:dark:bg-white/[0.02] 
+          flex flex-col shrink-0 transition-transform duration-200
+          ${showMobileToc ? 'translate-x-0 shadow-2xl' : '-translate-x-full md:translate-x-0'}
+        `}>
           <div className="p-3 border-b border-current/10 space-y-2">
-            <div className="flex items-center justify-between text-xs font-bold px-1 opacity-75">
-              <span>Содержание</span>
-              <span className="font-mono text-[10px]">{totalChapters} глав</span>
+            <div className="flex items-center justify-between text-xs font-bold px-1">
+              <span className="opacity-75">Содержание ({totalChapters})</span>
+              <button 
+                onClick={() => setShowMobileToc(false)} 
+                className="md:hidden p-1 rounded-lg hover:bg-black/5"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
             
             <div className="relative">
@@ -201,54 +228,55 @@ export const ReaderModal: React.FC = () => {
           </div>
         </aside>
 
-        {/* Правая область чтения */}
+        {/* Правая область чтения (на телефоне занимает 100% ширины) */}
         <main className="flex-1 flex flex-col justify-between p-4 sm:p-8 max-w-3xl mx-auto w-full overflow-hidden select-text">
           
-          <div className="flex items-center justify-between text-xs font-mono opacity-70 border-b border-current/10 pb-2 mb-3 select-none">
-            <span className="font-bold text-indigo-700 dark:text-indigo-400 truncate max-w-sm">
+          <div className="flex items-center justify-between gap-2 text-xs font-mono opacity-75 border-b border-current/10 pb-2 mb-3 select-none">
+            <span className="font-bold text-indigo-700 dark:text-indigo-400 truncate">
               {currentChapter.title}
             </span>
             <span className="shrink-0 font-bold bg-black/5 dark:bg-white/10 px-2.5 py-1 rounded-full text-[11px]">
-              Страница {currentPage + 1} из {totalPages}
+              Стр. {currentPage + 1}/{totalPages}
             </span>
           </div>
 
-          <div ref={textScrollRef} className="flex-1 overflow-y-auto pr-2 py-2">
+          <div ref={textScrollRef} className="flex-1 overflow-y-auto pr-1 sm:pr-2 py-1">
             <article 
-              className={`space-y-5 leading-relaxed ${
+              className={`space-y-4 sm:space-y-5 leading-relaxed ${
                 readerFontFamily === 'serif' ? 'font-serif' : 'font-sans'
               }`}
               style={{ 
                 fontSize: `${readerFontSize}px`, 
-                lineHeight: `${Math.round(readerFontSize * 1.7)}px` 
+                lineHeight: `${Math.round(readerFontSize * 1.65)}px` 
               }}
             >
               {currentParagraphs.map((para, idx) => (
-                <p key={idx} className="indent-6 sm:indent-8">
+                <p key={idx} className="indent-5 sm:indent-8">
                   {para}
                 </p>
               ))}
             </article>
           </div>
 
-          <footer className="pt-3 border-t border-current/10 flex items-center justify-between select-none">
+          <footer className="pt-3 border-t border-current/10 flex items-center justify-between gap-2 select-none">
             <button
               onClick={() => setCurrentPage((prev) => Math.max(0, prev - 1))}
               disabled={currentPage === 0}
-              className="px-4 py-2 rounded-xl border border-current/20 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-20 text-xs font-bold flex items-center gap-1.5 transition-all"
+              className="px-3 sm:px-4 py-2.5 rounded-xl border border-current/20 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-20 text-xs font-bold flex items-center gap-1 transition-all"
             >
               <ChevronLeft className="w-4 h-4" />
-              <span>Предыдущая страница</span>
+              <span className="hidden sm:inline">Предыдущая страница</span>
+              <span className="sm:hidden">Назад</span>
             </button>
 
             {isLastPageOfChapter ? (
               hasNextChapter ? (
                 <button
                   onClick={() => handleSelectChapter(activeChapterIndex + 1)}
-                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-2 shadow-md transition-all"
+                  className="px-4 sm:px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-all"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Следующая глава →</span>
+                  <span>След. глава →</span>
                 </button>
               ) : (
                 <span className="text-xs font-bold text-emerald-600">Конец книги 🏆</span>
@@ -256,9 +284,10 @@ export const ReaderModal: React.FC = () => {
             ) : (
               <button
                 onClick={() => setCurrentPage((prev) => Math.min(totalPages - 1, prev + 1))}
-                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-all"
+                className="px-4 sm:px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1 shadow-md transition-all"
               >
-                <span>Следующая страница</span>
+                <span className="hidden sm:inline">Следующая страница</span>
+                <span className="sm:hidden">Вперед</span>
                 <ChevronRight className="w-4 h-4" />
               </button>
             )}
@@ -270,8 +299,13 @@ export const ReaderModal: React.FC = () => {
 
       {/* Меню настроек темы */}
       {showSettings && (
-        <div className="absolute right-6 top-16 w-72 bg-white dark:bg-[#22252F] rounded-3xl shadow-2xl border border-black/10 dark:border-white/10 p-5 z-50 text-xs space-y-4">
-          <div className="font-bold text-sm">Параметры текста</div>
+        <div className="absolute right-4 sm:right-6 top-16 w-72 bg-white dark:bg-[#22252F] rounded-3xl shadow-2xl border border-black/10 dark:border-white/10 p-5 z-50 text-xs space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-sm">Параметры текста</span>
+            <button onClick={() => setShowSettings(false)} className="p-1 rounded-full hover:bg-black/5">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
           
           <div className="space-y-1">
             <span className="text-[10px] uppercase font-bold opacity-60">Шрифт</span>
