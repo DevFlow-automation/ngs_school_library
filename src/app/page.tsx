@@ -68,24 +68,22 @@ export default function Home() {
       <ReaderModal />
 
       {/* Footer */}
-      <footer className="bg-[#EEF0FA] dark:bg-[#16181F] border-t border-[#E0E2EC] dark:border-[#2B2E38] mt-12 py-8 text-xs text-[#74777F] dark:text-[#90939C]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-[#3F51B5] text-white flex items-center justify-center font-bold">
-              <BookOpen className="w-4 h-4" />
-            </div>
-            <div>
-              <span className="font-bold text-[#191C20] dark:text-[#E2E2E9]">LumenLib</span> • Цифровая образовательная платформа школы
-            </div>
-          </div>
-          <div className="flex items-center gap-6">
-            <span>Next.js 14 App Router</span>
-            <span>Tailwind CSS</span>
-            <span>TypeScript</span>
-            <span>Vercel Ready</span>
-          </div>
-        </div>
-      </footer>
+      {/* Footer */}
+<footer className="bg-[#EEF0FA] dark:bg-[#16181F] border-t border-[#E0E2EC] dark:border-[#2B2E38] mt-12 py-8 text-xs text-[#74777F] dark:text-[#90939C]">
+  <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+    <div className="flex items-center gap-3">
+      <div className="w-8 h-8 rounded-xl bg-[#3F51B5] text-white flex items-center justify-center font-bold">
+        <BookOpen className="w-4 h-4" />
+      </div>
+      <div>
+        <span className="font-bold text-[#191C20] dark:text-[#E2E2E9]">New Generation School Library</span> • Цифровая образовательная платформа
+      </div>
+    </div>
+    <div>
+      <span>© 2026 New Generation School. Все права защищены.</span>
+    </div>
+  </div>
+</footer>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-# LumenLib — Школьная медиатека и открытая читальня (Next.js 14)
+# NGS Library — Школьная медиатека и открытая читальня (Next.js 14)
 
 Современный фронтенд школьной онлайн-библиотеки, построенный на **Next.js 14 (App Router)**, **TypeScript**, **Tailwind CSS** и принципах **Material Design 3 (Material You)** с асимметричной Bento-разметкой.
 
