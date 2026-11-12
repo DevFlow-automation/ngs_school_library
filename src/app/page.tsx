@@ -18,7 +18,7 @@ export default function Home() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-8">
         
         {/* Navigation Tabs */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none shrink-0 whitespace-nowrap">
           <button 
             onClick={() => setActiveTab('all')}
             className={`px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
@@ -33,7 +33,7 @@ export default function Home() {
 
           <button 
             onClick={() => setActiveTab('curriculum')}
-            className={`px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
+            className={`px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 shrink-0 whitespace-nowrap ${
               activeTab === 'curriculum'
                 ? 'bg-[#3F51B5] text-white shadow-md shadow-indigo-500/20'
                 : 'bg-[#EEF0FA] dark:bg-[#22252D] text-[#44474F] dark:text-[#C4C7D0] hover:bg-[#E0E2EC]'
@@ -45,7 +45,7 @@ export default function Home() {
 
           <button 
             onClick={() => setActiveTab('my-shelf')}
-            className={`px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
+            className={`px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 shrink-0 whitespace-nowrap ${
               activeTab === 'my-shelf'
                 ? 'bg-[#3F51B5] text-white shadow-md shadow-indigo-500/20'
                 : 'bg-[#EEF0FA] dark:bg-[#22252D] text-[#44474F] dark:text-[#C4C7D0] hover:bg-[#E0E2EC]'
