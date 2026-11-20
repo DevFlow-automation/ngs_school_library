@@ -3,6 +3,7 @@
 import React from 'react';
 import { Header } from '@/components/Header';
 import { HeroBento } from '@/components/HeroBento';
+import { TopReadersLeaderboard } from '@/components/TopReadersLeaderboard';
 import { BookCatalog } from '@/components/BookCatalog';
 import { ReaderModal } from '@/components/ReaderModal';
 import { useReadingStore } from '@/store/useReadingStore';
@@ -58,6 +59,9 @@ export default function Home() {
 
         {/* Hero Bento */}
         {activeTab !== 'my-shelf' && <HeroBento />}
+
+        {/* Рейтинг лучших читателей школы (Топ-3) */}
+        {activeTab !== 'my-shelf' && <TopReadersLeaderboard />}
 
         {/* Main Catalog Section */}
         <BookCatalog />
