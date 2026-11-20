@@ -25,6 +25,8 @@ export const BookCatalog: React.FC = () => {
   const [dbBooks, setDbBooks] = useState<Book[]>([]);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function fetchBooks() {
       try {
         const { data } = await supabase
@@ -32,28 +34,47 @@ export const BookCatalog: React.FC = () => {
           .select('*')
           .order('created_at', { ascending: false });
 
+        if (cancelled) return;
+
         if (data && data.length > 0) {
-          const mapped: Book[] = data.map((b) => ({
-            id: b.id,
-            title: b.title,
-            author: b.author,
-            year: b.year || 1850,
-            grade: b.grade || '10-11',
-            category: b.category || 'classic',
-            categoryName: b.category_name || 'Русская классика',
-            readTime: '2.5 ч',
-            readersCount: 1,
-            rating: 5.0,
-            curriculum: Boolean(b.curriculum), // Берем реальный флаг из базы
-            coverGradient: b.cover_gradient || 'linear-gradient(135deg, #4338CA 0%, #3B82F6 100%)',
-            accentColor: '#3B82F6',
-            synopsis: b.synopsis || '',
-            teacherNote: b.curriculum ? 'Входит в школьную программу' : 'Внеклассное чтение',
-            audioSample: '',
-            chapters: (b.chapters && b.chapters.length > 0) 
-              ? b.chapters 
-              : [{ title: 'Часть I', paragraphs: [b.synopsis || 'Текст произведения готовится к публикации.'] }],
-          }));
+          const seenIds = new Set<string>();
+          const mapped: Book[] = [];
+
+          for (const b of data) {
+            if (!b?.id || seenIds.has(b.id)) continue;
+            seenIds.add(b.id);
+            mapped.push({
+              id: b.id,
+              title: b.title,
+              author: b.author,
+              year: b.year || 1850,
+              grade: b.grade || '10-11',
+              category: b.category || 'classic',
+              categoryName: b.category_name || 'Русская классика',
+              readTime: '2.5 ч',
+              readersCount: 1,
+              rating: 5.0,
+              curriculum: Boolean(b.curriculum), // Берем реальный флаг из базы
+              coverGradient: b.cover_gradient || 'linear-gradient(135deg, #4338CA 0%, #3B82F6 100%)',
+              accentColor: '#3B82F6',
+              synopsis: b.synopsis || '',
+              teacherNote: b.curriculum ? 'Входит в школьную программу' : 'Внеклассное чтение',
+              audioSample: '',
+              chapters: (b.chapters && b.chapters.length > 0) 
+                ? b.chapters 
+                : [{ title: 'Часть I', paragraphs: [b.synopsis || 'Текст произведения готовится к публикации.'] }],
+            });
+          }
+
+          // Синхронизируем общий кэш BOOKS для ReaderModal без дубликатов
+          mapped.forEach((book) => {
+            const existingIdx = BOOKS.findIndex((existing) => existing.id === book.id);
+            if (existingIdx >= 0) {
+              BOOKS[existingIdx] = book;
+            } else {
+              BOOKS.push(book);
+            }
+          });
 
           // Перемешиваем книги случайным образом при загрузке страницы (алгоритм Фишера-Йетса)
           for (let i = mapped.length - 1; i > 0; i--) {
@@ -62,6 +83,8 @@ export const BookCatalog: React.FC = () => {
           }
 
           setDbBooks(mapped);
+        } else {
+          setDbBooks([]);
         }
       } catch (err) {
         console.error('Ошибка загрузки книг:', err);
@@ -69,16 +92,19 @@ export const BookCatalog: React.FC = () => {
     }
 
     fetchBooks();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const allBooks = useMemo(() => {
-    const combined = [...dbBooks, ...BOOKS];
-    combined.forEach(b => {
-      if (!BOOKS.find(existing => existing.id === b.id)) {
-        BOOKS.push(b);
+    const byId = new Map<string, Book>();
+    for (const b of dbBooks) {
+      if (!byId.has(b.id)) {
+        byId.set(b.id, b);
       }
-    });
-    return combined;
+    }
+    return Array.from(byId.values());
   }, [dbBooks]);
 
   const filteredBooks = useMemo(() => {

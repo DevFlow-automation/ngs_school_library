@@ -65,7 +65,10 @@ export const HeroBento: React.FC = () => {
               : [{ title: 'Часть I', paragraphs: [raw.synopsis || 'Текст произведения.'] }],
           };
 
-          if (!BOOKS.find((existing) => existing.id === mapped.id)) {
+          const existingIdx = BOOKS.findIndex((existing) => existing.id === mapped.id);
+          if (existingIdx >= 0) {
+            BOOKS[existingIdx] = mapped;
+          } else {
             BOOKS.push(mapped);
           }
 
