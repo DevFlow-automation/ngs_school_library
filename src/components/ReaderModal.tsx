@@ -1,15 +1,17 @@
 'use client';
 
-import React, { useEffect, useState, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useReadingStore } from '@/store/useReadingStore';
 import { BOOKS } from '@/data/books';
 import { 
   ArrowLeft, Sliders, Bookmark, Search, 
-  ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X
+  ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X, Clock
 } from 'lucide-react';
 import { ReaderTheme } from '@/types/book';
+import { formatReadingTimer, getFastTurnThresholdSeconds } from '@/lib/readingMetrics';
 
 const TARGET_CHARS_PER_PAGE = 1100;
+const AUTO_FLUSH_MS = 15000;
 
 export const ReaderModal: React.FC = () => {
   const { 
@@ -19,6 +21,7 @@ export const ReaderModal: React.FC = () => {
     setChapterIndex,
     readingProgress,
     saveProgress,
+    recordReadingMetrics,
     readerFontSize,
     readerFontFamily,
     readerTheme,
@@ -33,7 +36,49 @@ export const ReaderModal: React.FC = () => {
   const [showMobileToc, setShowMobileToc] = useState(false);
   const [currentPage, setCurrentPage] = useState(0);
   const [chapterSearch, setChapterSearch] = useState('');
+  const [liveExtraSec, setLiveExtraSec] = useState(0);
   const textScrollRef = useRef<HTMLDivElement>(null);
+
+  // Рефы для точного подсчёта активного времени чтения и скорости перелистывания
+  const unsavedReadingMsRef = useRef(0);
+  const pageActiveMsRef = useRef(0);
+  const activeSinceRef = useRef<number | null>(null);
+
+  const captureActiveSlice = useCallback((keepRunning: boolean) => {
+    const now = performance.now();
+    if (activeSinceRef.current !== null) {
+      const elapsed = Math.max(0, now - activeSinceRef.current);
+      unsavedReadingMsRef.current += elapsed;
+      pageActiveMsRef.current += elapsed;
+    }
+    activeSinceRef.current = keepRunning ? now : null;
+  }, []);
+
+  const flushReadingMetrics = useCallback(
+    (
+      bookId: string,
+      opts?: { pageTurnElapsedSec?: number; isFastTurn?: boolean; skipSync?: boolean }
+    ) => {
+      const isRunning = activeSinceRef.current !== null;
+      captureActiveSlice(isRunning);
+
+      const wholeSeconds = Math.floor(unsavedReadingMsRef.current / 1000);
+      if (wholeSeconds > 0) {
+        unsavedReadingMsRef.current -= wholeSeconds * 1000;
+        setLiveExtraSec(0);
+      }
+
+      if (wholeSeconds > 0 || typeof opts?.pageTurnElapsedSec === 'number') {
+        recordReadingMetrics(bookId, {
+          deltaSeconds: wholeSeconds,
+          pageTurnElapsedSec: opts?.pageTurnElapsedSec,
+          isFastTurn: opts?.isFastTurn,
+          skipSync: opts?.skipSync,
+        });
+      }
+    },
+    [captureActiveSlice, recordReadingMetrics]
+  );
 
   const book = useMemo(() => {
     return BOOKS.find((b) => b.id === activeBookId);
@@ -96,12 +141,80 @@ export const ReaderModal: React.FC = () => {
     }
   }, [activeBookId, activeChapterIndex, currentPage, totalChapters, totalPages]);
 
+  // Активный таймер чтения: пауза при скрытии вкладки/потере фокуса, автосохранение каждые 15 сек и при закрытии
+  useEffect(() => {
+    if (!activeBookId) return;
+
+    unsavedReadingMsRef.current = 0;
+    pageActiveMsRef.current = 0;
+    setLiveExtraSec(0);
+
+    const isWindowActive = () =>
+      typeof document !== 'undefined' &&
+      document.visibilityState === 'visible' &&
+      (typeof document.hasFocus !== 'function' || document.hasFocus());
+
+    activeSinceRef.current = isWindowActive() ? performance.now() : null;
+
+    const pauseTimer = () => {
+      captureActiveSlice(false);
+    };
+
+    const resumeTimer = () => {
+      if (activeSinceRef.current === null && isWindowActive()) {
+        activeSinceRef.current = performance.now();
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        resumeTimer();
+      } else {
+        pauseTimer();
+        flushReadingMetrics(activeBookId);
+      }
+    };
+
+    const handlePageHide = () => {
+      pauseTimer();
+      flushReadingMetrics(activeBookId);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', pauseTimer);
+    window.addEventListener('focus', resumeTimer);
+    window.addEventListener('pagehide', handlePageHide);
+
+    const intervalId = window.setInterval(() => {
+      const now = performance.now();
+      const liveMs = activeSinceRef.current !== null ? Math.max(0, now - activeSinceRef.current) : 0;
+      const totalUnsavedMs = unsavedReadingMsRef.current + liveMs;
+
+      if (totalUnsavedMs >= AUTO_FLUSH_MS) {
+        flushReadingMetrics(activeBookId);
+      } else {
+        setLiveExtraSec(Math.floor(totalUnsavedMs / 1000));
+      }
+    }, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', pauseTimer);
+      window.removeEventListener('focus', resumeTimer);
+      window.removeEventListener('pagehide', handlePageHide);
+      flushReadingMetrics(activeBookId);
+      activeSinceRef.current = null;
+    };
+  }, [activeBookId, captureActiveSlice, flushReadingMetrics]);
+
   if (!activeBookId || !book) return null;
 
   const currentParagraphs = pages[currentPage] || [];
   const isLastPageOfChapter = currentPage === totalPages - 1;
   const hasNextChapter = activeChapterIndex < totalChapters - 1;
   const isBookmarked = myShelfIds.includes(book.id);
+  const totalDisplaySeconds = (readingProgress[book.id]?.readingSeconds || 0) + liveExtraSec;
 
   const filteredChapters = (book.chapters || [])
     .map((ch, idx) => ({ ...ch, index: idx }))
@@ -111,8 +224,53 @@ export const ReaderModal: React.FC = () => {
         String(ch.index + 1).includes(chapterSearch)
     );
 
+  const measureCurrentPageTurn = () => {
+    const isRunning = activeSinceRef.current !== null;
+    captureActiveSlice(isRunning);
+    const elapsedSec = Math.max(0.1, Math.round((pageActiveMsRef.current / 1000) * 10) / 10);
+    const pageChars = currentParagraphs.join(' ').length;
+    const fastThresholdSec = getFastTurnThresholdSeconds(pageChars);
+    pageActiveMsRef.current = 0;
+    return { elapsedSec, isFastTurn: elapsedSec < fastThresholdSec };
+  };
+
+  const handleCloseReader = () => {
+    flushReadingMetrics(book.id);
+    closeReader();
+  };
+
   const handleSelectChapter = (idx: number) => {
+    flushReadingMetrics(book.id, { skipSync: true });
+    pageActiveMsRef.current = 0;
     setChapterIndex(idx);
+    setCurrentPage(0);
+    setShowMobileToc(false);
+  };
+
+  const handlePrevPage = () => {
+    flushReadingMetrics(book.id, { skipSync: true });
+    pageActiveMsRef.current = 0;
+    setCurrentPage((prev) => Math.max(0, prev - 1));
+  };
+
+  const handleNextPage = () => {
+    const { elapsedSec, isFastTurn } = measureCurrentPageTurn();
+    flushReadingMetrics(book.id, {
+      pageTurnElapsedSec: elapsedSec,
+      isFastTurn,
+      skipSync: true,
+    });
+    setCurrentPage((prev) => Math.min(totalPages - 1, prev + 1));
+  };
+
+  const handleNextChapter = () => {
+    const { elapsedSec, isFastTurn } = measureCurrentPageTurn();
+    flushReadingMetrics(book.id, {
+      pageTurnElapsedSec: elapsedSec,
+      isFastTurn,
+      skipSync: true,
+    });
+    setChapterIndex(activeChapterIndex + 1);
     setCurrentPage(0);
     setShowMobileToc(false);
   };
@@ -124,7 +282,7 @@ export const ReaderModal: React.FC = () => {
       <header className="h-14 px-3 sm:px-6 flex items-center justify-between border-b border-current/10 shrink-0 bg-white/80 dark:bg-black/30 backdrop-blur-md z-30 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <button 
-            onClick={closeReader}
+            onClick={handleCloseReader}
             className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors shrink-0"
             title="Закрыть книгу"
           >
@@ -145,7 +303,15 @@ export const ReaderModal: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
+          <div
+            className="px-2.5 py-1 rounded-full bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 text-[11px] font-mono font-bold flex items-center gap-1.5"
+            title="Время чтения этой книги (считается только при открытой вкладке)"
+          >
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            <span>{formatReadingTimer(totalDisplaySeconds)}</span>
+          </div>
+
           <button 
             onClick={() => setShowSettings(!showSettings)}
             className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
@@ -260,7 +426,7 @@ export const ReaderModal: React.FC = () => {
 
           <footer className="pt-3 border-t border-current/10 flex items-center justify-between gap-2 select-none">
             <button
-              onClick={() => setCurrentPage((prev) => Math.max(0, prev - 1))}
+              onClick={handlePrevPage}
               disabled={currentPage === 0}
               className="px-3 sm:px-4 py-2.5 rounded-xl border border-current/20 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-20 text-xs font-bold flex items-center gap-1 transition-all"
             >
@@ -272,7 +438,7 @@ export const ReaderModal: React.FC = () => {
             {isLastPageOfChapter ? (
               hasNextChapter ? (
                 <button
-                  onClick={() => handleSelectChapter(activeChapterIndex + 1)}
+                  onClick={handleNextChapter}
                   className="px-4 sm:px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-all"
                 >
                   <CheckCircle2 className="w-4 h-4" />
@@ -283,7 +449,7 @@ export const ReaderModal: React.FC = () => {
               )
             ) : (
               <button
-                onClick={() => setCurrentPage((prev) => Math.min(totalPages - 1, prev + 1))}
+                onClick={handleNextPage}
                 className="px-4 sm:px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1 shadow-md transition-all"
               >
                 <span className="hidden sm:inline">Следующая страница</span>

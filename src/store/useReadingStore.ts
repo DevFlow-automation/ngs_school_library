@@ -13,6 +13,78 @@ export interface BookProgress {
   chapterIndex: number;
   pageIndex: number;
   percent: number;
+  readingSeconds?: number;
+  pagesTurned?: number;
+  fastTurnsCount?: number;
+  avgSecondsPerPage?: number;
+  minSecondsPerPage?: number | null;
+  totalTurnSeconds?: number;
+}
+
+export interface ReadingMetricDelta {
+  deltaSeconds?: number;
+  pageTurnElapsedSec?: number;
+  isFastTurn?: boolean;
+  skipSync?: boolean;
+}
+
+const MAX_TURN_DURATION_FOR_AVG_SEC = 180;
+let metricsColumnsUnsupported = false;
+
+async function upsertProgressToSupabase(payload: {
+  student_id: string;
+  book_id: string;
+  is_bookmarked: boolean;
+  current_chapter: number;
+  current_page: number;
+  progress_percent: number;
+  reading_seconds: number;
+  pages_turned: number;
+  fast_turns_count: number;
+  avg_seconds_per_page: number;
+  min_seconds_per_page: number | null;
+  last_read_at: string;
+}) {
+  const basePayload = {
+    student_id: payload.student_id,
+    book_id: payload.book_id,
+    is_bookmarked: payload.is_bookmarked,
+    current_chapter: payload.current_chapter,
+    current_page: payload.current_page,
+    progress_percent: payload.progress_percent,
+    last_read_at: payload.last_read_at,
+  };
+
+  if (metricsColumnsUnsupported) {
+    const { error } = await supabase
+      .from('reading_progress')
+      .upsert(basePayload, { onConflict: 'student_id,book_id' });
+    if (error) console.error('Ошибка сохранения прогресса:', error);
+    return;
+  }
+
+  const { error } = await supabase
+    .from('reading_progress')
+    .upsert(payload, { onConflict: 'student_id,book_id' });
+
+  if (error) {
+    const msg = String(error.message || '');
+    const isMissingColumn =
+      error.code === 'PGRST204' ||
+      error.code === '42703' ||
+      msg.includes('column') ||
+      msg.includes('schema cache');
+
+    if (isMissingColumn) {
+      metricsColumnsUnsupported = true;
+      const { error: fallbackError } = await supabase
+        .from('reading_progress')
+        .upsert(basePayload, { onConflict: 'student_id,book_id' });
+      if (fallbackError) console.error('Ошибка сохранения прогресса:', fallbackError);
+    } else {
+      console.error('Ошибка сохранения прогресса:', error);
+    }
+  }
 }
 
 const LATIN_TO_CYRILLIC: Record<string, string> = {
@@ -72,6 +144,7 @@ interface ReadingState {
   closeReader: () => void;
   setChapterIndex: (index: number) => void;
   saveProgress: (bookId: string, chapterIndex: number, pageIndex: number, totalChapters: number, totalPages: number) => void;
+  recordReadingMetrics: (bookId: string, delta: ReadingMetricDelta) => void;
   setReaderFontSize: (size: number) => void;
   setReaderFontFamily: (font: ReaderFont) => void;
   setReaderTheme: (theme: ReaderTheme) => void;
@@ -149,11 +222,32 @@ export const useReadingStore = create<ReadingState>()(
           const progressMap: Record<string, BookProgress> = {};
           data.forEach((row) => {
             if (row.is_bookmarked) shelf.push(row.book_id);
-            if (row.progress_percent > 0 || row.current_chapter > 0 || row.current_page > 0) {
+            const readingSeconds = Number(row.reading_seconds || 0);
+            const pagesTurned = Number(row.pages_turned || 0);
+            const fastTurnsCount = Number(row.fast_turns_count || 0);
+            const avgSecondsPerPage = Number(row.avg_seconds_per_page || 0);
+            const minSecondsPerPage =
+              row.min_seconds_per_page !== null && row.min_seconds_per_page !== undefined
+                ? Number(row.min_seconds_per_page)
+                : null;
+
+            if (
+              row.progress_percent > 0 ||
+              row.current_chapter > 0 ||
+              row.current_page > 0 ||
+              readingSeconds > 0 ||
+              pagesTurned > 0
+            ) {
               progressMap[row.book_id] = {
                 chapterIndex: row.current_chapter || 0,
                 pageIndex: row.current_page || 0,
                 percent: row.progress_percent || 0,
+                readingSeconds,
+                pagesTurned,
+                fastTurnsCount,
+                avgSecondsPerPage,
+                minSecondsPerPage,
+                totalTurnSeconds: avgSecondsPerPage * pagesTurned,
               };
             }
           });
@@ -179,23 +273,20 @@ export const useReadingStore = create<ReadingState>()(
         set({ myShelfIds: nextShelf });
 
         const curr = readingProgress[bookId] || { chapterIndex: 0, pageIndex: 0, percent: 0 };
-        supabase
-          .from('reading_progress')
-          .upsert(
-            {
-              student_id: student.id,
-              book_id: bookId,
-              is_bookmarked: !exists,
-              current_chapter: curr.chapterIndex,
-              current_page: curr.pageIndex,
-              progress_percent: curr.percent,
-              last_read_at: new Date().toISOString(),
-            },
-            { onConflict: 'student_id,book_id' }
-          )
-          .then(({ error }) => {
-            if (error) console.error('Ошибка сохранения закладки:', error);
-          });
+        void upsertProgressToSupabase({
+          student_id: student.id,
+          book_id: bookId,
+          is_bookmarked: !exists,
+          current_chapter: curr.chapterIndex,
+          current_page: curr.pageIndex,
+          progress_percent: curr.percent,
+          reading_seconds: Math.round(curr.readingSeconds || 0),
+          pages_turned: curr.pagesTurned || 0,
+          fast_turns_count: curr.fastTurnsCount || 0,
+          avg_seconds_per_page: Number((curr.avgSecondsPerPage || 0).toFixed(1)),
+          min_seconds_per_page: curr.minSecondsPerPage ?? null,
+          last_read_at: new Date().toISOString(),
+        });
       },
 
       openReader: (bookId, chapterIndex = 0) =>
@@ -212,32 +303,118 @@ export const useReadingStore = create<ReadingState>()(
         const chWeight = 1 / Math.max(totalChapters, 1);
         const pageProgress = (pageIndex + 1) / Math.max(totalPages, 1);
         const percent = Math.min(100, Math.max(1, Math.round((chapterIndex * chWeight + pageProgress * chWeight) * 100)));
+        const prev = readingProgress[bookId];
+        const nextEntry: BookProgress = {
+          chapterIndex,
+          pageIndex,
+          percent,
+          readingSeconds: prev?.readingSeconds || 0,
+          pagesTurned: prev?.pagesTurned || 0,
+          fastTurnsCount: prev?.fastTurnsCount || 0,
+          avgSecondsPerPage: prev?.avgSecondsPerPage || 0,
+          minSecondsPerPage: prev?.minSecondsPerPage ?? null,
+          totalTurnSeconds: prev?.totalTurnSeconds || 0,
+        };
 
         set({
           readingProgress: {
             ...readingProgress,
-            [bookId]: { chapterIndex, pageIndex, percent },
+            [bookId]: nextEntry,
           },
         });
 
         if (student) {
-          supabase
-            .from('reading_progress')
-            .upsert(
-              {
-                student_id: student.id,
-                book_id: bookId,
-                is_bookmarked: myShelfIds.includes(bookId),
-                current_chapter: chapterIndex,
-                current_page: pageIndex,
-                progress_percent: percent,
-                last_read_at: new Date().toISOString(),
-              },
-              { onConflict: 'student_id,book_id' }
-            )
-            .then(({ error }) => {
-              if (error) console.error('Ошибка сохранения прогресса:', error);
-            });
+          void upsertProgressToSupabase({
+            student_id: student.id,
+            book_id: bookId,
+            is_bookmarked: myShelfIds.includes(bookId),
+            current_chapter: chapterIndex,
+            current_page: pageIndex,
+            progress_percent: percent,
+            reading_seconds: Math.round(nextEntry.readingSeconds || 0),
+            pages_turned: nextEntry.pagesTurned || 0,
+            fast_turns_count: nextEntry.fastTurnsCount || 0,
+            avg_seconds_per_page: Number((nextEntry.avgSecondsPerPage || 0).toFixed(1)),
+            min_seconds_per_page: nextEntry.minSecondsPerPage ?? null,
+            last_read_at: new Date().toISOString(),
+          });
+        }
+      },
+
+      recordReadingMetrics: (bookId, delta) => {
+        const { student, myShelfIds, readingProgress } = get();
+        const prev = readingProgress[bookId] || {
+          chapterIndex: 0,
+          pageIndex: 0,
+          percent: 1,
+          readingSeconds: 0,
+          pagesTurned: 0,
+          fastTurnsCount: 0,
+          avgSecondsPerPage: 0,
+          minSecondsPerPage: null,
+          totalTurnSeconds: 0,
+        };
+
+        const addSeconds = Math.max(0, Math.round(delta.deltaSeconds || 0));
+        const nextReadingSeconds = (prev.readingSeconds || 0) + addSeconds;
+
+        let nextPagesTurned = prev.pagesTurned || 0;
+        let nextFastTurns = prev.fastTurnsCount || 0;
+        let nextTotalTurnSeconds = prev.totalTurnSeconds ?? (prev.avgSecondsPerPage || 0) * nextPagesTurned;
+        let nextAvg = prev.avgSecondsPerPage || 0;
+        let nextMin = prev.minSecondsPerPage ?? null;
+
+        if (typeof delta.pageTurnElapsedSec === 'number' && Number.isFinite(delta.pageTurnElapsedSec)) {
+          const rawTurnSec = Math.max(0.1, Math.round(delta.pageTurnElapsedSec * 10) / 10);
+          const cappedForAvg = Math.min(rawTurnSec, MAX_TURN_DURATION_FOR_AVG_SEC);
+          nextPagesTurned += 1;
+          if (delta.isFastTurn) {
+            nextFastTurns += 1;
+          }
+          nextTotalTurnSeconds += cappedForAvg;
+          nextAvg = Math.round((nextTotalTurnSeconds / nextPagesTurned) * 10) / 10;
+          nextMin = nextMin === null ? rawTurnSec : Math.min(nextMin, rawTurnSec);
+        }
+
+        if (
+          addSeconds === 0 &&
+          typeof delta.pageTurnElapsedSec !== 'number'
+        ) {
+          return;
+        }
+
+        const nextEntry: BookProgress = {
+          ...prev,
+          readingSeconds: nextReadingSeconds,
+          pagesTurned: nextPagesTurned,
+          fastTurnsCount: nextFastTurns,
+          avgSecondsPerPage: nextAvg,
+          minSecondsPerPage: nextMin,
+          totalTurnSeconds: nextTotalTurnSeconds,
+        };
+
+        set({
+          readingProgress: {
+            ...readingProgress,
+            [bookId]: nextEntry,
+          },
+        });
+
+        if (student && !delta.skipSync) {
+          void upsertProgressToSupabase({
+            student_id: student.id,
+            book_id: bookId,
+            is_bookmarked: myShelfIds.includes(bookId),
+            current_chapter: nextEntry.chapterIndex,
+            current_page: nextEntry.pageIndex,
+            progress_percent: nextEntry.percent,
+            reading_seconds: Math.round(nextEntry.readingSeconds || 0),
+            pages_turned: nextEntry.pagesTurned || 0,
+            fast_turns_count: nextEntry.fastTurnsCount || 0,
+            avg_seconds_per_page: Number((nextEntry.avgSecondsPerPage || 0).toFixed(1)),
+            min_seconds_per_page: nextEntry.minSecondsPerPage ?? null,
+            last_read_at: new Date().toISOString(),
+          });
         }
       },
 
