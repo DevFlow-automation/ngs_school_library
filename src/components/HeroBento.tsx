@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Sparkles, Bookmark, BookOpen, Trophy, RefreshCw } from 'lucide-react';
+import Link from 'next/link';
+import { Sparkles, Bookmark, BookOpen, Trophy, RefreshCw, User, Bell } from 'lucide-react';
 import { useReadingStore } from '@/store/useReadingStore';
 import { supabase } from '@/lib/supabase';
 import { BOOKS } from '@/data/books';
@@ -15,7 +16,15 @@ interface QuoteItem {
 }
 
 export const HeroBento: React.FC = () => {
-  const { openReader, toggleShelf, myShelfIds, setActiveTab, readingProgress } = useReadingStore();
+  const {
+    openReader,
+    toggleShelf,
+    myShelfIds,
+    setActiveTab,
+    readingProgress,
+    student,
+    unreadMessagesCount,
+  } = useReadingStore();
 
   const [featuredBook, setFeaturedBook] = useState<Book | null>(null);
 
@@ -227,12 +236,29 @@ export const HeroBento: React.FC = () => {
           </div>
         </div>
 
-        <button 
-          onClick={() => setActiveTab('curriculum')}
-          className="w-full py-2.5 px-4 rounded-xl text-xs font-bold text-[#3F51B5] dark:text-[#A5B4FC] bg-[#3F51B5]/10 hover:bg-[#3F51B5]/20 transition-all flex items-center justify-center gap-1"
-        >
-          <span>Список программы</span>
-        </button>
+        <div className="space-y-2">
+          {student && (
+            <Link
+              href="/profile"
+              className="w-full py-2.5 px-4 rounded-xl text-xs font-bold text-white bg-[#3F51B5] hover:bg-[#303F9F] transition-all flex items-center justify-center gap-1.5 shadow-sm"
+            >
+              <User className="w-3.5 h-3.5" />
+              <span>Мой профиль</span>
+              {unreadMessagesCount > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 rounded-full bg-red-500 text-white text-[10px] font-extrabold inline-flex items-center gap-0.5">
+                  <Bell className="w-2.5 h-2.5" />
+                  {unreadMessagesCount}
+                </span>
+              )}
+            </Link>
+          )}
+          <button 
+            onClick={() => setActiveTab('curriculum')}
+            className="w-full py-2.5 px-4 rounded-xl text-xs font-bold text-[#3F51B5] dark:text-[#A5B4FC] bg-[#3F51B5]/10 hover:bg-[#3F51B5]/20 transition-all flex items-center justify-center gap-1"
+          >
+            <span>Список программы</span>
+          </button>
+        </div>
       </div>
 
       {/* 3. Цитата дня (из Supabase) */}

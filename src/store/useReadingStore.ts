@@ -114,6 +114,7 @@ function normalizeName(raw: string): string {
 interface ReadingState {
   student: StudentProfile | null;
   isLoginModalOpen: boolean;
+  unreadMessagesCount: number;
 
   activeTab: 'all' | 'curriculum' | 'my-shelf';
   gradeFilter: GradeFilter;
@@ -133,6 +134,8 @@ interface ReadingState {
   loginStudent: (fullName: string, gradeClass: string) => Promise<void>;
   logoutStudent: () => void;
   syncFromSupabase: () => Promise<void>;
+  fetchUnreadMessagesCount: () => Promise<void>;
+  setUnreadMessagesCount: (count: number) => void;
 
   setActiveTab: (tab: 'all' | 'curriculum' | 'my-shelf') => void;
   setGradeFilter: (grade: GradeFilter) => void;
@@ -155,6 +158,7 @@ export const useReadingStore = create<ReadingState>()(
     (set, get) => ({
       student: null,
       isLoginModalOpen: false,
+      unreadMessagesCount: 0,
 
       activeTab: 'all',
       gradeFilter: 'all',
@@ -204,9 +208,33 @@ export const useReadingStore = create<ReadingState>()(
         });
 
         await get().syncFromSupabase();
+        await get().fetchUnreadMessagesCount();
       },
 
-      logoutStudent: () => set({ student: null, myShelfIds: [], readingProgress: {} }),
+      logoutStudent: () => set({ student: null, myShelfIds: [], readingProgress: {}, unreadMessagesCount: 0 }),
+
+      setUnreadMessagesCount: (count) => set({ unreadMessagesCount: Math.max(0, count) }),
+
+      fetchUnreadMessagesCount: async () => {
+        const student = get().student;
+        if (!student) {
+          set({ unreadMessagesCount: 0 });
+          return;
+        }
+        try {
+          const { count, error } = await supabase
+            .from('student_messages')
+            .select('id', { count: 'exact', head: true })
+            .eq('student_id', student.id)
+            .eq('is_read', false);
+
+          if (!error && typeof count === 'number') {
+            set({ unreadMessagesCount: count });
+          }
+        } catch {
+          // Таблица student_messages ещё может быть не создана
+        }
+      },
 
       syncFromSupabase: async () => {
         const student = get().student;

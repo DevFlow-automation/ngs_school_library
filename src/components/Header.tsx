@@ -1,14 +1,16 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { BookOpen, Search, Moon, Sun, X, User, LogOut } from 'lucide-react';
+import Link from 'next/link';
+import { BookOpen, Search, Moon, Sun, X, User, LogOut, Bell } from 'lucide-react';
 import { useReadingStore } from '@/store/useReadingStore';
 
 export const Header: React.FC = () => {
   const { 
     searchQuery, setSearchQuery, setActiveTab, 
     student, isLoginModalOpen, setLoginModalOpen, 
-    loginStudent, logoutStudent, syncFromSupabase 
+    loginStudent, logoutStudent, syncFromSupabase,
+    unreadMessagesCount, fetchUnreadMessagesCount
   } = useReadingStore();
   
   const [isDark, setIsDark] = useState(false);
@@ -19,8 +21,9 @@ export const Header: React.FC = () => {
   useEffect(() => {
     if (student?.id) {
       syncFromSupabase();
+      fetchUnreadMessagesCount();
     }
-  }, [student?.id]);
+  }, [student?.id, syncFromSupabase, fetchUnreadMessagesCount]);
 
   const toggleDark = () => {
     setIsDark(!isDark);
@@ -50,7 +53,7 @@ export const Header: React.FC = () => {
       <header className="sticky top-0 z-40 bg-[#F8F9FE]/85 dark:bg-[#111318]/85 backdrop-blur-md border-b border-[#E0E2EC]/60 dark:border-[#44474F]/40 transition-colors">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 sm:h-20 flex items-center justify-between gap-2 sm:gap-4">
           
-          <div className="flex items-center gap-2.5 sm:gap-3 cursor-pointer select-none min-w-0" onClick={() => setActiveTab('all')}>
+          <Link href="/" className="flex items-center gap-2.5 sm:gap-3 cursor-pointer select-none min-w-0" onClick={() => setActiveTab('all')}>
             <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl sm:rounded-[20px] bg-gradient-to-tr from-[#3F51B5] via-[#5C6BC0] to-[#8C9EFF] flex items-center justify-center text-white shadow-md shadow-indigo-500/20 shrink-0">
               <BookOpen className="w-5 h-5 sm:w-6 sm:h-6" />
             </div>
@@ -65,7 +68,7 @@ export const Header: React.FC = () => {
               </div>
               <p className="hidden sm:block text-xs text-[#74777F] dark:text-[#C4C7D0] font-medium">Школьная электронная читальня</p>
             </div>
-          </div>
+          </Link>
 
           {/* Поиск на ПК */}
           <div className="hidden md:flex flex-1 max-w-md mx-6">
@@ -96,14 +99,38 @@ export const Header: React.FC = () => {
             </button>
 
             {student ? (
-              <div className="flex items-center gap-2 pl-2 border-l border-[#E0E2EC] dark:border-[#44474F]/40">
-                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center font-bold text-xs sm:text-sm shadow-sm">
-                  {initials}
-                </div>
-                <div className="hidden sm:block text-left text-xs leading-tight">
-                  <div className="font-bold text-[#191C20] dark:text-[#E2E2E9]">{student.fullName}</div>
-                  <div className="text-[#74777F] dark:text-[#90939C]">{student.gradeClass} класс</div>
-                </div>
+              <div className="flex items-center gap-1.5 sm:gap-2 pl-2 border-l border-[#E0E2EC] dark:border-[#44474F]/40">
+                <Link
+                  href="/profile"
+                  className="flex items-center gap-2 px-2 py-1 rounded-2xl hover:bg-[#EEF0FA] dark:hover:bg-[#22252D] transition-colors group"
+                  title="Открыть мой профиль и сообщения"
+                >
+                  <div className="relative">
+                    <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center font-bold text-xs sm:text-sm shadow-sm">
+                      {initials}
+                    </div>
+                    {unreadMessagesCount > 0 && (
+                      <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-600 text-white text-[10px] font-extrabold flex items-center justify-center ring-2 ring-white dark:ring-[#111318]">
+                        {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
+                      </span>
+                    )}
+                  </div>
+                  <div className="hidden sm:block text-left text-xs leading-tight">
+                    <div className="font-bold text-[#191C20] dark:text-[#E2E2E9] group-hover:text-[#3F51B5] dark:group-hover:text-[#A5B4FC] transition-colors flex items-center gap-1">
+                      <span>{student.fullName}</span>
+                    </div>
+                    <div className="text-[#74777F] dark:text-[#90939C] flex items-center gap-1.5">
+                      <span>{student.gradeClass} класс</span>
+                      <span className="text-[#3F51B5] dark:text-[#A5B4FC] font-semibold">• Профиль</span>
+                    </div>
+                  </div>
+                  {unreadMessagesCount > 0 && (
+                    <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 dark:bg-red-950/50 text-red-600 dark:text-red-300 text-[10px] font-bold">
+                      <Bell className="w-3 h-3" />
+                      {unreadMessagesCount}
+                    </span>
+                  )}
+                </Link>
                 <button
                   onClick={logoutStudent}
                   className="p-2 rounded-full text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"

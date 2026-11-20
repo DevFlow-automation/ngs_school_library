@@ -8,7 +8,7 @@ import {
   Upload, CheckCircle2, FileText, Sparkles, Palette,
   Search, Trash2, Edit3, X, Plus, BookOpen, AlertTriangle,
   Quote, GraduationCap, Users, Lock, LogOut, Clock, Zap,
-  ShieldAlert, ShieldCheck, RefreshCw
+  ShieldAlert, ShieldCheck, RefreshCw, MessageSquare, Send
 } from 'lucide-react';
 import {
   evaluateReadingPace,
@@ -56,6 +56,24 @@ interface DbQuote {
   work: string;
   book_id: string | null;
 }
+
+interface StudentMessageItem {
+  id: string;
+  student_id: string;
+  book_id: string | null;
+  book_title: string | null;
+  sender_name: string;
+  message: string;
+  is_read: boolean;
+  created_at: string;
+}
+
+const MESSAGE_TEMPLATES = [
+  'Пожалуйста, читай внимательнее — замечено слишком быстрое пролистывание страниц.',
+  'Обрати внимание: прогресс чтения высокий, но времени на чтение потрачено мало. Постарайся прочитать внимательно.',
+  'Замечен перескок по главам. Вернись и прочитай пропущенные главы.',
+  'Отличная работа и внимательное чтение! Так держать!',
+];
 
 interface StudentRow {
   id: string;
@@ -122,6 +140,17 @@ export default function AdminDashboardPage() {
   const [studentSearch, setStudentSearch] = useState('');
   const [onlySuspicious, setOnlySuspicious] = useState(false);
 
+  // Сообщения ученикам
+  const [messagesByStudent, setMessagesByStudent] = useState<Record<string, StudentMessageItem[]>>({});
+  const [messageTarget, setMessageTarget] = useState<{
+    student: StudentRow;
+    bookId: string | null;
+    bookTitle: string | null;
+  } | null>(null);
+  const [messageDraft, setMessageDraft] = useState('');
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [messageError, setMessageError] = useState('');
+
   const fetchBooks = async () => {
     setIsLoadingList(true);
     try {
@@ -149,6 +178,76 @@ export default function AdminDashboardPage() {
       .select('*, reading_progress(*)')
       .order('created_at', { ascending: false });
     if (data) setStudentsList(data);
+
+    try {
+      const { data: msgData, error: msgError } = await supabase
+        .from('student_messages')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (!msgError && msgData) {
+        const grouped: Record<string, StudentMessageItem[]> = {};
+        for (const m of msgData as StudentMessageItem[]) {
+          if (!grouped[m.student_id]) grouped[m.student_id] = [];
+          grouped[m.student_id].push(m);
+        }
+        setMessagesByStudent(grouped);
+      }
+    } catch {
+      // Таблица student_messages ещё не создана
+    }
+  };
+
+  const openMessageModal = (
+    student: StudentRow,
+    bookId: string | null = null,
+    bookTitle: string | null = null,
+    initialText = ''
+  ) => {
+    setMessageTarget({ student, bookId, bookTitle });
+    setMessageDraft(initialText);
+    setMessageError('');
+  };
+
+  const handleSendStudentMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!messageTarget || !messageDraft.trim()) return;
+
+    setIsSendingMessage(true);
+    setMessageError('');
+    try {
+      const { error } = await supabase.from('student_messages').insert([
+        {
+          student_id: messageTarget.student.id,
+          book_id: messageTarget.bookId,
+          book_title: messageTarget.bookTitle,
+          sender_name: 'Администратор библиотеки',
+          message: messageDraft.trim(),
+          is_read: false,
+        },
+      ]);
+
+      if (error) throw error;
+
+      setMessageTarget(null);
+      setMessageDraft('');
+      await fetchActivity();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err || '');
+      if (msg.includes('student_messages') || msg.includes('relation') || msg.includes('schema cache')) {
+        setMessageError(
+          'Таблица student_messages ещё не создана в Supabase. Выполните SQL из файла supabase_student_messages.sql.'
+        );
+      } else {
+        setMessageError('Не удалось отправить сообщение. Проверьте подключение к Supabase.');
+      }
+    } finally {
+      setIsSendingMessage(false);
+    }
+  };
+
+  const handleDeleteStudentMessage = async (msgId: string) => {
+    await supabase.from('student_messages').delete().eq('id', msgId);
+    await fetchActivity();
   };
 
   useEffect(() => {
@@ -946,12 +1045,27 @@ export default function AdminDashboardPage() {
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-3 text-[11px] text-gray-500 dark:text-gray-400">
+                        <div className="flex flex-wrap items-center gap-2.5 text-[11px] text-gray-500 dark:text-gray-400">
                           <span className="flex items-center gap-1 font-mono font-semibold text-indigo-700 dark:text-indigo-300">
                             <Clock className="w-3.5 h-3.5" />
                             Всего: {formatReadingDuration(totalReadingSec)}
                           </span>
                           <span>Книг: {st.reading_progress?.length || 0}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openMessageModal(
+                                st,
+                                null,
+                                null,
+                                hasSuspiciousBook ? MESSAGE_TEMPLATES[0] : ''
+                              )
+                            }
+                            className="px-3 py-1.5 rounded-xl bg-[#3F51B5] hover:bg-[#303F9F] text-white text-[11px] font-bold inline-flex items-center gap-1.5 shadow-sm transition-colors"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>Написать ученику</span>
+                          </button>
                         </div>
                       </div>
 
@@ -1000,6 +1114,28 @@ export default function AdminDashboardPage() {
                                     <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-bold font-mono">
                                       {row.progress_percent}%
                                     </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        openMessageModal(
+                                          st,
+                                          row.book_id,
+                                          bookObj?.title || row.book_id,
+                                          pace.status === 'suspicious'
+                                            ? `По книге «${bookObj?.title || row.book_id}»: ${MESSAGE_TEMPLATES[0]}`
+                                            : ''
+                                        )
+                                      }
+                                      className={`px-2 py-0.5 rounded-lg text-[10px] font-bold inline-flex items-center gap-1 transition-colors ${
+                                        pace.status === 'suspicious'
+                                          ? 'bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                          : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                                      }`}
+                                      title="Написать ученику по этой книге"
+                                    >
+                                      <MessageSquare className="w-3 h-3" />
+                                      <span>{pace.status === 'suspicious' ? 'Замечание' : 'Написать'}</span>
+                                    </button>
                                   </div>
                                 </div>
 
@@ -1075,6 +1211,61 @@ export default function AdminDashboardPage() {
                       ) : (
                         <div className="text-[11px] text-gray-400 italic">
                           Еще не начал читать книги
+                        </div>
+                      )}
+
+                      {(messagesByStudent[st.id]?.length || 0) > 0 && (
+                        <div className="pt-2 border-t border-gray-200/70 dark:border-gray-800 space-y-1.5">
+                          <div className="text-[11px] font-bold text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+                            <MessageSquare className="w-3.5 h-3.5 text-indigo-500" />
+                            <span>Отправленные сообщения ({messagesByStudent[st.id].length}):</span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {messagesByStudent[st.id].map((m) => (
+                              <div
+                                key={m.id}
+                                className="p-2.5 rounded-xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/40 flex items-start justify-between gap-2 text-xs"
+                              >
+                                <div className="space-y-0.5 min-w-0">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    {m.book_title && (
+                                      <span className="px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/50 text-indigo-800 dark:text-indigo-200 text-[10px] font-bold">
+                                        📖 {m.book_title}
+                                      </span>
+                                    )}
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                        m.is_read
+                                          ? 'bg-emerald-100 text-emerald-700'
+                                          : 'bg-amber-100 text-amber-800'
+                                      }`}
+                                    >
+                                      {m.is_read ? 'Прочитано' : 'Не прочитано'}
+                                    </span>
+                                    <span className="text-[10px] font-mono text-gray-400">
+                                      {new Date(m.created_at).toLocaleString('ru-RU', {
+                                        day: '2-digit',
+                                        month: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                      })}
+                                    </span>
+                                  </div>
+                                  <p className="text-gray-700 dark:text-gray-200 whitespace-pre-line">
+                                    {m.message}
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteStudentMessage(m.id)}
+                                  className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0"
+                                  title="Удалить сообщение"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -1213,6 +1404,101 @@ export default function AdminDashboardPage() {
                   className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700"
                 >
                   {isSavingEdit ? 'Сохранение...' : 'Сохранить'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* МОДАЛКА ОТПРАВКИ СООБЩЕНИЯ УЧЕНИКУ */}
+      {messageTarget && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#1C1F26] w-full max-w-lg rounded-[28px] p-6 shadow-2xl border border-gray-200 dark:border-gray-800 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3">
+              <div>
+                <h3 className="font-extrabold text-base text-gray-900 dark:text-white flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 text-[#3F51B5]" />
+                  <span>Сообщение ученику</span>
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Кому: <b>{messageTarget.student.full_name}</b> ({messageTarget.student.grade_class})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMessageTarget(null)}
+                className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-white/10"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {messageTarget.bookTitle && (
+              <div className="px-3 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200 text-xs font-semibold flex items-center justify-between gap-2">
+                <span>📖 Книга: {messageTarget.bookTitle}</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setMessageTarget({ ...messageTarget, bookId: null, bookTitle: null })
+                  }
+                  className="text-[11px] opacity-70 hover:opacity-100"
+                >
+                  Убрать
+                </button>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-bold text-gray-500">Быстрые шаблоны:</div>
+              <div className="flex flex-wrap gap-1.5">
+                {MESSAGE_TEMPLATES.map((tpl, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setMessageDraft(tpl)}
+                    className="px-2.5 py-1 rounded-xl bg-gray-100 dark:bg-white/10 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 text-[11px] text-left text-gray-700 dark:text-gray-200 transition-colors"
+                  >
+                    {tpl.slice(0, 48)}…
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <form onSubmit={handleSendStudentMessage} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-gray-500">Текст сообщения</label>
+                <textarea
+                  rows={4}
+                  required
+                  value={messageDraft}
+                  onChange={(e) => setMessageDraft(e.target.value)}
+                  placeholder="Напишите замечание или комментарий ученику — оно появится у него в личном профиле..."
+                  className="mt-1 w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent text-sm outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              {messageError && (
+                <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 text-xs font-semibold">
+                  {messageError}
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setMessageTarget(null)}
+                  className="flex-1 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 text-xs font-bold"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSendingMessage || !messageDraft.trim()}
+                  className="flex-1 py-2.5 rounded-xl bg-[#3F51B5] hover:bg-[#303F9F] text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>{isSendingMessage ? 'Отправка...' : 'Отправить ученику'}</span>
                 </button>
               </div>
             </form>
