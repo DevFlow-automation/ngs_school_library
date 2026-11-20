@@ -5,10 +5,14 @@ import { useReadingStore } from '@/store/useReadingStore';
 import { BOOKS } from '@/data/books';
 import { 
   ArrowLeft, Sliders, Bookmark, Search, 
-  ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X, Clock, Lock
+  ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X, Clock, Lock, AlertTriangle
 } from 'lucide-react';
 import { ReaderTheme } from '@/types/book';
-import { formatReadingTimer, getFastTurnThresholdSeconds } from '@/lib/readingMetrics';
+import {
+  evaluateBookCompletion,
+  formatReadingTimer,
+  getFastTurnThresholdSeconds,
+} from '@/lib/readingMetrics';
 import {
   calculateStudentPoints,
   getAgeGroup,
@@ -219,8 +223,20 @@ export const ReaderModal: React.FC = () => {
   const currentParagraphs = pages[currentPage] || [];
   const isLastPageOfChapter = currentPage === totalPages - 1;
   const hasNextChapter = activeChapterIndex < totalChapters - 1;
+  const isEndOfBook = isLastPageOfChapter && !hasNextChapter;
   const isBookmarked = myShelfIds.includes(book.id);
-  const totalDisplaySeconds = (readingProgress[book.id]?.readingSeconds || 0) + liveExtraSec;
+  const currentBookProgress = readingProgress[book.id];
+  const totalDisplaySeconds = (currentBookProgress?.readingSeconds || 0) + liveExtraSec;
+  const completionCheck = isEndOfBook
+    ? evaluateBookCompletion({
+        progressPercent: 100,
+        readingSeconds: totalDisplaySeconds,
+        pagesTurned: currentBookProgress?.pagesTurned || 0,
+        fastTurnsCount: currentBookProgress?.fastTurnsCount || 0,
+        avgSecondsPerPage: currentBookProgress?.avgSecondsPerPage || 0,
+        minSecondsPerPage: currentBookProgress?.minSecondsPerPage ?? null,
+      })
+    : null;
   const studentAgeGroup = getAgeGroup(student?.gradeClass);
   const studentPoints = calculateStudentPoints(
     Object.values(readingProgress).map((p) => ({
@@ -443,6 +459,23 @@ export const ReaderModal: React.FC = () => {
             </article>
           </div>
 
+          {isEndOfBook && completionCheck && !completionCheck.counted && (
+            <div className="mb-2.5 p-3 rounded-2xl bg-red-50 dark:bg-red-950/50 border border-red-300 dark:border-red-800/70 text-red-900 dark:text-red-100 text-xs flex items-start gap-2.5 select-none">
+              <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <div className="font-extrabold">
+                  Книга не засчитана как прочитанная на 100%
+                </div>
+                <div className="text-[11.5px] opacity-90">
+                  <b>Причина:</b> {completionCheck.reason}
+                </div>
+                <div className="text-[11px] opacity-75">
+                  Прочитайте книгу внимательно в спокойном темпе, чтобы она засчиталась прочитанной.
+                </div>
+              </div>
+            </div>
+          )}
+
           <footer className="pt-3 border-t border-current/10 flex items-center justify-between gap-2 select-none">
             <button
               onClick={handlePrevPage}
@@ -463,6 +496,11 @@ export const ReaderModal: React.FC = () => {
                   <CheckCircle2 className="w-4 h-4" />
                   <span>След. глава →</span>
                 </button>
+              ) : completionCheck && !completionCheck.counted ? (
+                <span className="px-3 py-1.5 rounded-xl bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300 text-xs font-bold inline-flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>Не засчитано</span>
+                </span>
               ) : (
                 <span className="text-xs font-bold text-emerald-600">Конец книги 🏆</span>
               )

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
 import { GradeFilter, CategoryFilter, SortOption, ReaderTheme, ReaderFont } from '@/types/book';
+import { evaluateBookCompletion } from '@/lib/readingMetrics';
 
 export interface StudentProfile {
   id: string;
@@ -19,6 +20,7 @@ export interface BookProgress {
   avgSecondsPerPage?: number;
   minSecondsPerPage?: number | null;
   totalTurnSeconds?: number;
+  completionRejectedReason?: string | null;
 }
 
 export interface ReadingMetricDelta {
@@ -345,18 +347,44 @@ export const useReadingStore = create<ReadingState>()(
         const { student, myShelfIds, readingProgress } = get();
         const chWeight = 1 / Math.max(totalChapters, 1);
         const pageProgress = (pageIndex + 1) / Math.max(totalPages, 1);
-        const percent = Math.min(100, Math.max(1, Math.round((chapterIndex * chWeight + pageProgress * chWeight) * 100)));
+        const rawPercent = Math.min(100, Math.max(1, Math.round((chapterIndex * chWeight + pageProgress * chWeight) * 100)));
         const prev = readingProgress[bookId];
+
+        const readingSeconds = prev?.readingSeconds || 0;
+        const pagesTurned = prev?.pagesTurned || 0;
+        const fastTurnsCount = prev?.fastTurnsCount || 0;
+        const avgSecondsPerPage = prev?.avgSecondsPerPage || 0;
+        const minSecondsPerPage = prev?.minSecondsPerPage ?? null;
+
+        let percent = rawPercent;
+        let completionRejectedReason: string | null = null;
+
+        if (rawPercent >= 95) {
+          const check = evaluateBookCompletion({
+            progressPercent: rawPercent,
+            readingSeconds,
+            pagesTurned,
+            fastTurnsCount,
+            avgSecondsPerPage,
+            minSecondsPerPage,
+          });
+          if (!check.counted) {
+            percent = 94;
+            completionRejectedReason = check.reason;
+          }
+        }
+
         const nextEntry: BookProgress = {
           chapterIndex,
           pageIndex,
           percent,
-          readingSeconds: prev?.readingSeconds || 0,
-          pagesTurned: prev?.pagesTurned || 0,
-          fastTurnsCount: prev?.fastTurnsCount || 0,
-          avgSecondsPerPage: prev?.avgSecondsPerPage || 0,
-          minSecondsPerPage: prev?.minSecondsPerPage ?? null,
+          readingSeconds,
+          pagesTurned,
+          fastTurnsCount,
+          avgSecondsPerPage,
+          minSecondsPerPage,
           totalTurnSeconds: prev?.totalTurnSeconds || 0,
+          completionRejectedReason,
         };
 
         set({

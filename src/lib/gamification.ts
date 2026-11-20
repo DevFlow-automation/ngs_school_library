@@ -1,5 +1,9 @@
 import type { ReaderTheme } from '../types/book';
-import { evaluateReadingPace, type ReadingMetricsSnapshot } from './readingMetrics';
+import {
+  evaluateBookCompletion,
+  evaluateReadingPace,
+  type ReadingMetricsSnapshot,
+} from './readingMetrics';
 
 export type AgeGroup = 'junior' | 'middle' | 'senior';
 export type RewardCategory = 'frame' | 'theme' | 'perk';
@@ -472,9 +476,10 @@ export function calculateStudentPoints(
     fastPagesIgnored += fast;
 
     const pace = evaluateReadingPace(item);
+    const completion = evaluateBookCompletion(item);
     if (pace.status === 'suspicious') {
       suspiciousBooksCount += 1;
-    } else if (percent >= 95 && sec >= 120) {
+    } else if (percent >= 95 && completion.counted) {
       honestCompletedBooks += 1;
     }
   }

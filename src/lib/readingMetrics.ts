@@ -15,6 +15,13 @@ export interface ReadingPaceEvaluation {
   reason: string;
 }
 
+export interface BookCompletionCheck {
+  counted: boolean;
+  reason: string;
+}
+
+export const MIN_COMPLETION_READING_SECONDS = 90;
+
 /**
  * Порог "слишком быстрого" перелистывания страницы в секундах.
  * Для стандартной страницы (~1100 символов) составляет 9-10 сек,
@@ -121,4 +128,60 @@ export function evaluateReadingPace(m: ReadingMetricsSnapshot): ReadingPaceEvalu
     label: 'Нормальное чтение',
     reason: avg > 0 ? `Среднее: ${formatTurnSpeed(avg)}` : `Время: ${formatReadingDuration(seconds)}`,
   };
+}
+
+/**
+ * Проверяет, можно ли засчитать книгу как 100% прочитанную.
+ * Если книга пролистана слишком быстро или открыта сразу в конце — не засчитывается, с указанием причины.
+ */
+export function evaluateBookCompletion(m: ReadingMetricsSnapshot): BookCompletionCheck {
+  const seconds = Math.max(0, Number(m.readingSeconds || 0));
+  const turns = Math.max(0, Number(m.pagesTurned || 0));
+  const fastTurns = Math.min(turns, Math.max(0, Number(m.fastTurnsCount || 0)));
+  const avg = Math.max(0, Number(m.avgSecondsPerPage || 0));
+  const fastRatio = turns > 0 ? fastTurns / turns : 0;
+
+  if (turns >= 3 && fastTurns >= 3 && fastRatio >= 0.4) {
+    return {
+      counted: false,
+      reason: `Слишком быстрое пролистывание страниц: ${fastTurns} из ${turns} перелистываний были быстрее нормы (среднее ${formatTurnSpeed(avg)}).`,
+    };
+  }
+
+  if (turns >= 3 && avg > 0 && avg < 10) {
+    return {
+      counted: false,
+      reason: `Слишком высокая скорость перелистывания страниц (${formatTurnSpeed(avg)}).`,
+    };
+  }
+
+  if (turns >= 1 && fastTurns === turns && seconds < MIN_COMPLETION_READING_SECONDS) {
+    return {
+      counted: false,
+      reason: `Все страницы были пролистаны слишком быстро (время чтения: ${formatReadingDuration(seconds)}).`,
+    };
+  }
+
+  if (seconds < MIN_COMPLETION_READING_SECONDS) {
+    if (turns <= 2) {
+      return {
+        counted: false,
+        reason: `Перескок по главам без последовательного чтения (время чтения: ${formatReadingDuration(seconds)}).`,
+      };
+    }
+    return {
+      counted: false,
+      reason: `Слишком малое время чтения книги (${formatReadingDuration(seconds)} при минимуме ${formatReadingDuration(MIN_COMPLETION_READING_SECONDS)}).`,
+    };
+  }
+
+  const pace = evaluateReadingPace({ ...m, progressPercent: 100 });
+  if (pace.status === 'suspicious') {
+    return {
+      counted: false,
+      reason: pace.reason || 'Зафиксировано подозрительно быстрое чтение.',
+    };
+  }
+
+  return { counted: true, reason: '' };
 }
