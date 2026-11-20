@@ -129,6 +129,7 @@ interface ReadingState {
   readerFontSize: number;
   readerFontFamily: ReaderFont;
   readerTheme: ReaderTheme;
+  equippedFrameId: string | null;
 
   setLoginModalOpen: (open: boolean) => void;
   loginStudent: (fullName: string, gradeClass: string) => Promise<void>;
@@ -151,6 +152,7 @@ interface ReadingState {
   setReaderFontSize: (size: number) => void;
   setReaderFontFamily: (font: ReaderFont) => void;
   setReaderTheme: (theme: ReaderTheme) => void;
+  setEquippedFrameId: (frameId: string | null) => void;
 }
 
 export const useReadingStore = create<ReadingState>()(
@@ -173,6 +175,7 @@ export const useReadingStore = create<ReadingState>()(
       readerFontSize: 19,
       readerFontFamily: 'serif',
       readerTheme: 'paper',
+      equippedFrameId: null,
 
       setLoginModalOpen: (open) => set({ isLoginModalOpen: open }),
 
@@ -211,7 +214,15 @@ export const useReadingStore = create<ReadingState>()(
         await get().fetchUnreadMessagesCount();
       },
 
-      logoutStudent: () => set({ student: null, myShelfIds: [], readingProgress: {}, unreadMessagesCount: 0 }),
+      logoutStudent: () =>
+        set({
+          student: null,
+          myShelfIds: [],
+          readingProgress: {},
+          unreadMessagesCount: 0,
+          equippedFrameId: null,
+          readerTheme: 'paper',
+        }),
 
       setUnreadMessagesCount: (count) => set({ unreadMessagesCount: Math.max(0, count) }),
 
@@ -449,6 +460,7 @@ export const useReadingStore = create<ReadingState>()(
       setReaderFontSize: (size) => set({ readerFontSize: size }),
       setReaderFontFamily: (font) => set({ readerFontFamily: font }),
       setReaderTheme: (theme) => set({ readerTheme: theme }),
+      setEquippedFrameId: (frameId) => set({ equippedFrameId: frameId }),
     }),
     {
       name: 'ngs-library-storage',
@@ -459,6 +471,7 @@ export const useReadingStore = create<ReadingState>()(
         readerFontSize: state.readerFontSize,
         readerFontFamily: state.readerFontFamily,
         readerTheme: state.readerTheme,
+        equippedFrameId: state.equippedFrameId,
       }),
     }
   )

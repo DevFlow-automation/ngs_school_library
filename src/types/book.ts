@@ -1,7 +1,15 @@
 export type GradeFilter = 'all' | '5-7' | '8-9' | '10-11';
 export type CategoryFilter = 'all' | 'classic' | 'scifi' | 'adventure' | 'fairy' | 'drama';
 export type SortOption = 'popular' | 'grade' | 'title' | 'time';
-export type ReaderTheme = 'paper' | 'sepia' | 'night' | 'forest';
+export type ReaderTheme =
+  | 'paper'
+  | 'sepia'
+  | 'night'
+  | 'forest'
+  | 'ocean'
+  | 'starry'
+  | 'coffee'
+  | 'obsidian';
 export type ReaderFont = 'serif' | 'sans';
 
 export interface Chapter {

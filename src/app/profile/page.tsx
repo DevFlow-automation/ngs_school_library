@@ -10,6 +10,15 @@ import { BOOKS } from '@/data/books';
 import { Book } from '@/types/book';
 import { formatReadingDuration } from '@/lib/readingMetrics';
 import {
+  calculateStudentPoints,
+  getAgeGroup,
+  getAgeGroupMeta,
+  getFrameRewardById,
+  getRewardsForAgeGroup,
+  getStudentRank,
+  RewardCategory,
+} from '@/lib/gamification';
+import {
   ArrowLeft,
   BookOpen,
   Bookmark,
@@ -22,6 +31,13 @@ import {
   Award,
   Check,
   CheckCheck,
+  Sparkles,
+  Lock,
+  Printer,
+  X,
+  Palette,
+  Trophy,
+  Info,
 } from 'lucide-react';
 
 interface StudentMessageRow {
@@ -57,12 +73,18 @@ export default function StudentProfilePage() {
     openReader,
     syncFromSupabase,
     setUnreadMessagesCount,
+    readerTheme,
+    setReaderTheme,
+    equippedFrameId,
+    setEquippedFrameId,
   } = useReadingStore();
 
   const [booksMap, setBooksMap] = useState<Record<string, Book>>({});
   const [messages, setMessages] = useState<StudentMessageRow[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [rewardFilter, setRewardFilter] = useState<'all' | RewardCategory>('all');
+  const [showCertificateModal, setShowCertificateModal] = useState(false);
 
   const loadBooks = useCallback(async () => {
     try {
@@ -209,6 +231,49 @@ export default function StudentProfilePage() {
 
   const unreadCount = useMemo(() => messages.filter((m) => !m.is_read).length, [messages]);
 
+  const ageGroup = useMemo(() => getAgeGroup(student?.gradeClass), [student?.gradeClass]);
+  const ageGroupMeta = useMemo(() => getAgeGroupMeta(ageGroup), [ageGroup]);
+
+  const pointsBreakdown = useMemo(
+    () =>
+      calculateStudentPoints(
+        readingEntries.map(({ progress }) => ({
+          progressPercent: progress.percent || 0,
+          readingSeconds: progress.readingSeconds || 0,
+          pagesTurned: progress.pagesTurned || 0,
+          fastTurnsCount: progress.fastTurnsCount || 0,
+          avgSecondsPerPage: progress.avgSecondsPerPage || 0,
+          minSecondsPerPage: progress.minSecondsPerPage ?? null,
+        })),
+        student?.gradeClass
+      ),
+    [readingEntries, student?.gradeClass]
+  );
+
+  const rankProgress = useMemo(
+    () => getStudentRank(pointsBreakdown.totalPoints, ageGroup),
+    [pointsBreakdown.totalPoints, ageGroup]
+  );
+
+  const ageRewards = useMemo(() => getRewardsForAgeGroup(ageGroup), [ageGroup]);
+  const filteredRewards = useMemo(
+    () =>
+      rewardFilter === 'all'
+        ? ageRewards
+        : ageRewards.filter((r) => r.category === rewardFilter),
+    [ageRewards, rewardFilter]
+  );
+  const unlockedRewardsCount = useMemo(
+    () => ageRewards.filter((r) => pointsBreakdown.totalPoints >= r.requiredPoints).length,
+    [ageRewards, pointsBreakdown.totalPoints]
+  );
+
+  const activeFrameReward = useMemo(() => {
+    const reward = getFrameRewardById(equippedFrameId);
+    if (!reward || pointsBreakdown.totalPoints < reward.requiredPoints) return null;
+    return reward;
+  }, [equippedFrameId, pointsBreakdown.totalPoints]);
+
   const initials = student
     ? student.fullName
         .split(' ')
@@ -277,23 +342,61 @@ export default function StudentProfilePage() {
         ) : (
           <>
             {/* Шапка профиля ученика */}
-            <section className="bg-gradient-to-br from-[#1C244B] via-[#232E66] to-[#344182] text-white rounded-[32px] p-6 sm:p-8 shadow-xl relative overflow-hidden">
+            <section
+              style={
+                activeFrameReward?.frameStyle
+                  ? { background: activeFrameReward.frameStyle.bannerGradient }
+                  : undefined
+              }
+              className={`text-white rounded-[32px] p-6 sm:p-8 shadow-xl relative overflow-hidden ${
+                activeFrameReward?.frameStyle
+                  ? ''
+                  : 'bg-gradient-to-br from-[#1C244B] via-[#232E66] to-[#344182]'
+              }`}
+            >
               <div className="absolute -right-14 -top-14 w-72 h-72 bg-indigo-400/20 rounded-full blur-3xl pointer-events-none" />
 
               <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-5">
                 <div className="flex items-center gap-4">
-                  <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-3xl bg-white/15 backdrop-blur-md border border-white/20 flex items-center justify-center font-extrabold text-2xl sm:text-3xl shadow-lg shrink-0">
-                    {initials}
+                  <div className="relative shrink-0">
+                    <div
+                      style={
+                        activeFrameReward?.frameStyle
+                          ? { background: activeFrameReward.frameStyle.avatarBg }
+                          : undefined
+                      }
+                      className={`w-16 h-16 sm:w-20 sm:h-20 rounded-3xl backdrop-blur-md border border-white/25 flex items-center justify-center font-extrabold text-2xl sm:text-3xl shadow-lg ${
+                        activeFrameReward?.frameStyle ? '' : 'bg-white/15'
+                      }`}
+                    >
+                      {initials}
+                    </div>
+                    <span
+                      className="absolute -bottom-1.5 -right-1.5 w-7 h-7 rounded-xl bg-white text-base shadow-md flex items-center justify-center"
+                      title={activeFrameReward?.title || rankProgress.current.title}
+                    >
+                      {activeFrameReward?.frameStyle?.badgeIcon || rankProgress.current.icon}
+                    </span>
                   </div>
                   <div>
-                    <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/15 text-[#FFE082] text-[11px] font-bold uppercase tracking-wider mb-1.5">
-                      Читательский профиль
+                    <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-white/15 text-[#FFE082] text-[11px] font-bold uppercase tracking-wider">
+                        {rankProgress.current.icon} {rankProgress.current.title}
+                      </span>
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-400/25 text-amber-100 text-[11px] font-mono font-extrabold">
+                        ⭐ {pointsBreakdown.totalPoints} баллов
+                      </span>
+                      {activeFrameReward?.frameStyle && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/15 text-white text-[10px] font-bold">
+                          {activeFrameReward.frameStyle.badgeIcon} {activeFrameReward.frameStyle.badgeText}
+                        </span>
+                      )}
                     </div>
                     <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight leading-tight">
                       {student.fullName}
                     </h1>
                     <p className="text-sm text-indigo-100/85 mt-0.5 font-medium">
-                      {student.gradeClass} класс • New Generation School Library
+                      {student.gradeClass} класс • {ageGroupMeta.subtitle} ({ageGroupMeta.label})
                     </p>
                   </div>
                 </div>
@@ -309,8 +412,28 @@ export default function StudentProfilePage() {
                 )}
               </div>
 
+              {/* Прогресс до следующего ранга */}
+              <div className="relative z-10 mt-5 p-3.5 rounded-2xl bg-black/20 backdrop-blur-md border border-white/10 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-bold text-white/90">
+                    Уровень {rankProgress.current.level}: {rankProgress.current.icon} {rankProgress.current.title}
+                  </span>
+                  <span className="font-mono text-amber-200 font-bold">
+                    {rankProgress.next
+                      ? `До «${rankProgress.next.icon} ${rankProgress.next.title}»: ещё ${rankProgress.pointsToNext} б.`
+                      : 'Максимальный ранг достигнут! 🏆'}
+                  </span>
+                </div>
+                <div className="w-full h-2.5 rounded-full bg-white/15 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-amber-300 via-yellow-400 to-emerald-400 transition-all duration-500"
+                    style={{ width: `${Math.max(4, rankProgress.progressPercent)}%` }}
+                  />
+                </div>
+              </div>
+
               {/* 4 KPI карточки */}
-              <div className="relative z-10 grid grid-cols-2 lg:grid-cols-4 gap-3 mt-6">
+              <div className="relative z-10 grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
                 <div className="p-4 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10">
                   <div className="flex items-center gap-2 text-indigo-200 text-xs font-semibold">
                     <BookOpen className="w-4 h-4" />
@@ -339,11 +462,236 @@ export default function StudentProfilePage() {
 
                 <div className="p-4 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10">
                   <div className="flex items-center gap-2 text-indigo-200 text-xs font-semibold">
-                    <Bookmark className="w-4 h-4" />
-                    <span>На моей полке</span>
+                    <Trophy className="w-4 h-4" />
+                    <span>Наград открыто</span>
                   </div>
-                  <div className="text-2xl font-extrabold mt-1.5 font-mono">{myShelfIds.length}</div>
+                  <div className="text-2xl font-extrabold mt-1.5 font-mono">
+                    {unlockedRewardsCount}/{ageRewards.length}
+                  </div>
                 </div>
+              </div>
+            </section>
+
+            {/* Бальная система и разблокировка наград (с учётом возраста) */}
+            <section
+              id="rewards"
+              className="bg-white dark:bg-[#1C1F26] rounded-[28px] p-6 border border-[#E0E2EC]/70 dark:border-[#2F323D] shadow-sm space-y-5"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                    <Sparkles className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-base sm:text-lg font-extrabold text-[#191C20] dark:text-white flex flex-wrap items-center gap-2">
+                      <span>Баллы и награды</span>
+                      <span className="px-2.5 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 text-[11px] font-bold">
+                        {ageGroupMeta.label}
+                      </span>
+                    </h2>
+                    <p className="text-xs text-[#74777F] dark:text-[#90939C]">
+                      Читай внимательно, копи баллы и открывай стили профиля, темы читалки и школьные привилегии
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(
+                    [
+                      ['all', 'Все'],
+                      ['frame', 'Стили'],
+                      ['theme', 'Темы'],
+                      ['perk', 'Привилегии'],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setRewardFilter(key)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+                        rewardFilter === key
+                          ? 'bg-[#3F51B5] text-white shadow-sm'
+                          : 'bg-[#EEF0FA] dark:bg-[#22252D] text-[#44474F] dark:text-[#C4C7D0] hover:bg-[#E0E2EC]'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Как начисляются баллы */}
+              <div className="p-4 rounded-2xl bg-[#F8F9FE] dark:bg-[#151820] border border-[#E0E2EC]/70 dark:border-[#2F323D] space-y-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                  <div className="p-3 rounded-xl bg-white dark:bg-[#1C1F26] border border-[#E0E2EC]/60 dark:border-[#2F323D] flex items-center justify-between">
+                    <div>
+                      <div className="font-bold text-[#191C20] dark:text-white">⏱ Активное чтение</div>
+                      <div className="text-[11px] text-[#74777F]">+2 б. за каждую минуту</div>
+                    </div>
+                    <span className="font-mono font-extrabold text-indigo-600 dark:text-indigo-400">
+                      +{pointsBreakdown.timePoints}
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-white dark:bg-[#1C1F26] border border-[#E0E2EC]/60 dark:border-[#2F323D] flex items-center justify-between">
+                    <div>
+                      <div className="font-bold text-[#191C20] dark:text-white">📖 Честные страницы</div>
+                      <div className="text-[11px] text-[#74777F]">+1 б. за прочитанную стр.</div>
+                    </div>
+                    <span className="font-mono font-extrabold text-emerald-600 dark:text-emerald-400">
+                      +{pointsBreakdown.honestPagePoints}
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-white dark:bg-[#1C1F26] border border-[#E0E2EC]/60 dark:border-[#2F323D] flex items-center justify-between">
+                    <div>
+                      <div className="font-bold text-[#191C20] dark:text-white">🏆 Прочитанные книги</div>
+                      <div className="text-[11px] text-[#74777F]">
+                        +{pointsBreakdown.completionBonusPerBook} б. за книгу ({pointsBreakdown.honestCompletedBooks})
+                      </div>
+                    </div>
+                    <span className="font-mono font-extrabold text-amber-600 dark:text-amber-400">
+                      +{pointsBreakdown.completionPoints}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2 text-[11px] text-[#74777F] dark:text-[#90939C]">
+                  <Info className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                  <span>
+                    Баллы засчитываются только за внимательное чтение — быстрое пролистывание страниц и перескок глав не приносят баллов.
+                    {pointsBreakdown.fastPagesIgnored > 0 && (
+                      <> (Не засчитано быстрых кликов: {pointsBreakdown.fastPagesIgnored})</>
+                    )}
+                  </span>
+                </div>
+              </div>
+
+              {/* Сетка наград */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                {filteredRewards.map((reward) => {
+                  const isUnlocked = pointsBreakdown.totalPoints >= reward.requiredPoints;
+                  const pct = Math.min(
+                    100,
+                    Math.round((pointsBreakdown.totalPoints / Math.max(1, reward.requiredPoints)) * 100)
+                  );
+                  const isFrameActive =
+                    reward.category === 'frame' && equippedFrameId === reward.id && isUnlocked;
+                  const isThemeActive =
+                    reward.category === 'theme' && readerTheme === reward.themeValue && isUnlocked;
+
+                  return (
+                    <div
+                      key={reward.id}
+                      className={`p-4 rounded-2xl border flex flex-col justify-between gap-3 transition-all ${
+                        isFrameActive || isThemeActive
+                          ? 'border-[#3F51B5] bg-indigo-50/50 dark:bg-indigo-950/25 ring-1 ring-[#3F51B5]'
+                          : isUnlocked
+                          ? 'border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/25 dark:bg-emerald-950/10'
+                          : 'border-[#E0E2EC]/70 dark:border-[#2F323D] bg-[#F8F9FE]/60 dark:bg-[#151820] opacity-85'
+                      }`}
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div
+                            style={
+                              reward.frameStyle
+                                ? { background: reward.frameStyle.avatarBg }
+                                : reward.themePreviewBg
+                                ? {
+                                    backgroundColor: reward.themePreviewBg,
+                                    color: reward.themePreviewText,
+                                  }
+                                : undefined
+                            }
+                            className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg shadow-sm border border-black/10 ${
+                              !reward.frameStyle && !reward.themePreviewBg
+                                ? 'bg-amber-100 dark:bg-amber-950/50'
+                                : ''
+                            }`}
+                          >
+                            {reward.icon}
+                          </div>
+
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-extrabold inline-flex items-center gap-1 ${
+                              isUnlocked
+                                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200'
+                                : 'bg-gray-200/80 dark:bg-white/10 text-gray-600 dark:text-gray-300'
+                            }`}
+                          >
+                            {isUnlocked ? '✓ Открыто' : `🔒 ${reward.requiredPoints} б.`}
+                          </span>
+                        </div>
+
+                        <div>
+                          <h3 className="font-extrabold text-xs sm:text-sm text-[#191C20] dark:text-white leading-snug">
+                            {reward.title}
+                          </h3>
+                          <p className="text-[11px] text-[#74777F] dark:text-[#90939C] mt-1 leading-relaxed">
+                            {reward.description}
+                          </p>
+                        </div>
+                      </div>
+
+                      {!isUnlocked ? (
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-[10px] font-mono text-[#74777F]">
+                            <span className="inline-flex items-center gap-1">
+                              <Lock className="w-3 h-3" />
+                              Ещё {reward.requiredPoints - pointsBreakdown.totalPoints} б.
+                            </span>
+                            <span>{pct}%</span>
+                          </div>
+                          <div className="w-full h-1.5 rounded-full bg-[#E0E2EC] dark:bg-[#2E323D] overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-[#3F51B5]"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : reward.category === 'frame' ? (
+                        <button
+                          type="button"
+                          onClick={() => setEquippedFrameId(isFrameActive ? null : reward.id)}
+                          className={`w-full py-2 px-3 rounded-xl text-xs font-bold transition-all ${
+                            isFrameActive
+                              ? 'bg-[#3F51B5] text-white'
+                              : 'bg-white dark:bg-[#22252D] border border-[#3F51B5]/40 text-[#3F51B5] dark:text-[#A5B4FC] hover:bg-indigo-50'
+                          }`}
+                        >
+                          {isFrameActive ? '✓ Надет (снять)' : 'Надеть стиль'}
+                        </button>
+                      ) : reward.category === 'theme' && reward.themeValue ? (
+                        <button
+                          type="button"
+                          onClick={() => setReaderTheme(reward.themeValue!)}
+                          className={`w-full py-2 px-3 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-all ${
+                            isThemeActive
+                              ? 'bg-[#3F51B5] text-white'
+                              : 'bg-white dark:bg-[#22252D] border border-[#3F51B5]/40 text-[#3F51B5] dark:text-[#A5B4FC] hover:bg-indigo-50'
+                          }`}
+                        >
+                          <Palette className="w-3.5 h-3.5" />
+                          <span>{isThemeActive ? '✓ Тема активна' : 'Включить тему'}</span>
+                        </button>
+                      ) : reward.perkType === 'certificate' ? (
+                        <button
+                          type="button"
+                          onClick={() => setShowCertificateModal(true)}
+                          className="w-full py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-sm transition-all"
+                        >
+                          <Award className="w-3.5 h-3.5" />
+                          <span>Открыть сертификат</span>
+                        </button>
+                      ) : (
+                        <div className="p-2 rounded-xl bg-amber-100/80 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200 text-[11px] font-bold text-center">
+                          ✓ Доступно — покажи библиотекарю!
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </section>
 
@@ -588,6 +936,85 @@ export default function StudentProfilePage() {
           </>
         )}
       </main>
+
+      {/* Модалка именного сертификата / грамоты читателя */}
+      {showCertificateModal && student && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-xl space-y-3">
+            <div
+              id="ngs-certificate-printable"
+              className="bg-[#FFFDF8] text-[#181A18] rounded-[28px] p-8 border-4 border-[#12372A] shadow-2xl relative overflow-hidden text-center space-y-5"
+            >
+              <div className="border border-[#D97706]/50 rounded-2xl p-6 space-y-4">
+                <div className="text-xs font-bold uppercase tracking-[0.2em] text-[#D97706]">
+                  New Generation School • Библиотека
+                </div>
+                <div className="text-4xl">{ageGroup === 'junior' ? '🏅' : ageGroup === 'middle' ? '📜' : '🎓'}</div>
+                <h3 className="text-2xl font-serif font-extrabold text-[#12372A]">
+                  {ageGroup === 'junior'
+                    ? 'Грамота лучшего читателя'
+                    : 'Именной сертификат читателя NGS'}
+                </h3>
+                <p className="text-xs text-gray-600">Награждается ученик(ца) {student.gradeClass} класса</p>
+                <div className="text-2xl sm:text-3xl font-extrabold text-[#1C244B] py-1">
+                  {student.fullName}
+                </div>
+                <p className="text-xs text-gray-700 max-w-md mx-auto leading-relaxed">
+                  За внимательное и увлечённое чтение в цифровой библиотеке школы и достижение ранга{' '}
+                  <b>
+                    {rankProgress.current.icon} «{rankProgress.current.title}»
+                  </b>
+                  .
+                </p>
+
+                <div className="grid grid-cols-3 gap-2 pt-3 border-t border-[#DFD8C8]">
+                  <div>
+                    <div className="text-[10px] uppercase text-gray-500 font-bold">Баллы</div>
+                    <div className="text-lg font-mono font-extrabold text-[#D97706]">
+                      {pointsBreakdown.totalPoints}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase text-gray-500 font-bold">Время чтения</div>
+                    <div className="text-lg font-mono font-extrabold text-[#12372A]">
+                      {formatReadingDuration(totalReadingSeconds)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase text-gray-500 font-bold">Прочитано книг</div>
+                    <div className="text-lg font-mono font-extrabold text-[#3F51B5]">
+                      {pointsBreakdown.honestCompletedBooks}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-[11px] font-mono text-gray-400 pt-2">
+                  Выдано {new Date().toLocaleDateString('ru-RU')} • NGS Library
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="px-5 py-2.5 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-lg"
+              >
+                <Printer className="w-4 h-4" />
+                <span>Распечатать / Сохранить PDF</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCertificateModal(false)}
+                className="px-5 py-2.5 rounded-2xl bg-white text-gray-800 text-xs font-bold inline-flex items-center gap-1.5 shadow-lg"
+              >
+                <X className="w-4 h-4" />
+                <span>Закрыть</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ReaderModal />
     </div>

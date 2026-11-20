@@ -15,6 +15,11 @@ import {
   formatReadingDuration,
   formatTurnSpeed
 } from '@/lib/readingMetrics';
+import {
+  calculateStudentPoints,
+  getAgeGroup,
+  getStudentRank
+} from '@/lib/gamification';
 
 const COVER_GRADIENTS = [
   { name: 'Индиго', value: 'linear-gradient(135deg, #1E1B4B 0%, #4338CA 50%, #6366F1 100%)' },
@@ -1020,6 +1025,18 @@ export default function AdminDashboardPage() {
                     0
                   );
                   const hasSuspiciousBook = isStudentSuspicious(st);
+                  const stPoints = calculateStudentPoints(
+                    (st.reading_progress || []).map((r) => ({
+                      progressPercent: r.progress_percent || 0,
+                      readingSeconds: r.reading_seconds || 0,
+                      pagesTurned: r.pages_turned || 0,
+                      fastTurnsCount: r.fast_turns_count || 0,
+                      avgSecondsPerPage: r.avg_seconds_per_page || 0,
+                      minSecondsPerPage: r.min_seconds_per_page ?? null,
+                    })),
+                    st.grade_class
+                  );
+                  const stRank = getStudentRank(stPoints.totalPoints, getAgeGroup(st.grade_class));
 
                   return (
                     <div
@@ -1037,6 +1054,12 @@ export default function AdminDashboardPage() {
                           </span>
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800">
                             {st.grade_class}
+                          </span>
+                          <span
+                            className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 font-mono"
+                            title={`Ранг: ${stRank.current.title} (${stPoints.totalPoints} б.)`}
+                          >
+                            ⭐ {stPoints.totalPoints} б. • {stRank.current.icon} {stRank.current.title}
                           </span>
                           {hasSuspiciousBook && (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300 flex items-center gap-1">

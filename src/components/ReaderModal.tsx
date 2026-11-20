@@ -5,16 +5,22 @@ import { useReadingStore } from '@/store/useReadingStore';
 import { BOOKS } from '@/data/books';
 import { 
   ArrowLeft, Sliders, Bookmark, Search, 
-  ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X, Clock
+  ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X, Clock, Lock
 } from 'lucide-react';
 import { ReaderTheme } from '@/types/book';
 import { formatReadingTimer, getFastTurnThresholdSeconds } from '@/lib/readingMetrics';
+import {
+  calculateStudentPoints,
+  getAgeGroup,
+  getUnlockableThemesForAgeGroup,
+} from '@/lib/gamification';
 
 const TARGET_CHARS_PER_PAGE = 1100;
 const AUTO_FLUSH_MS = 15000;
 
 export const ReaderModal: React.FC = () => {
   const { 
+    student,
     activeBookId, 
     activeChapterIndex, 
     closeReader, 
@@ -215,6 +221,19 @@ export const ReaderModal: React.FC = () => {
   const hasNextChapter = activeChapterIndex < totalChapters - 1;
   const isBookmarked = myShelfIds.includes(book.id);
   const totalDisplaySeconds = (readingProgress[book.id]?.readingSeconds || 0) + liveExtraSec;
+  const studentAgeGroup = getAgeGroup(student?.gradeClass);
+  const studentPoints = calculateStudentPoints(
+    Object.values(readingProgress).map((p) => ({
+      progressPercent: p.percent || 0,
+      readingSeconds: p.readingSeconds || 0,
+      pagesTurned: p.pagesTurned || 0,
+      fastTurnsCount: p.fastTurnsCount || 0,
+      avgSecondsPerPage: p.avgSecondsPerPage || 0,
+      minSecondsPerPage: p.minSecondsPerPage ?? null,
+    })),
+    student?.gradeClass
+  ).totalPoints;
+  const unlockableThemes = getUnlockableThemesForAgeGroup(studentAgeGroup);
 
   const filteredChapters = (book.chapters || [])
     .map((ch, idx) => ({ ...ch, index: idx }))
@@ -510,14 +529,16 @@ export const ReaderModal: React.FC = () => {
             />
           </div>
 
-          <div className="space-y-1">
+          <div className="space-y-2">
             <span className="text-[10px] uppercase font-bold opacity-60">Тема</span>
             <div className="grid grid-cols-4 gap-2">
               {(['paper', 'sepia', 'night', 'forest'] as ReaderTheme[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setReaderTheme(t)}
-                  className={`py-2 rounded-xl text-[10px] font-bold border ${
+                  className={`py-2 rounded-xl text-[10px] font-bold border transition-all ${
+                    readerTheme === t ? 'ring-2 ring-indigo-500' : ''
+                  } ${
                     t === 'paper' ? 'bg-[#FAF8F5] text-black' :
                     t === 'sepia' ? 'bg-[#F4ECD8] text-amber-950' :
                     t === 'night' ? 'bg-[#16171D] text-white' : 'bg-[#121E1A] text-emerald-100'
@@ -530,6 +551,46 @@ export const ReaderModal: React.FC = () => {
                 </button>
               ))}
             </div>
+
+            {unlockableThemes.length > 0 && (
+              <div className="space-y-1 pt-1">
+                <div className="flex items-center justify-between text-[10px] font-bold opacity-60">
+                  <span className="uppercase">Наградные темы</span>
+                  <span className="font-mono">⭐ {studentPoints} б.</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {unlockableThemes.map((reward) => {
+                    const isUnlocked = studentPoints >= reward.requiredPoints;
+                    const isActive = readerTheme === reward.themeValue;
+                    return (
+                      <button
+                        key={reward.id}
+                        type="button"
+                        disabled={!isUnlocked}
+                        onClick={() => reward.themeValue && setReaderTheme(reward.themeValue)}
+                        style={{
+                          backgroundColor: reward.themePreviewBg,
+                          color: reward.themePreviewText,
+                        }}
+                        title={
+                          isUnlocked
+                            ? reward.description
+                            : `Откроется при ${reward.requiredPoints} баллах (сейчас ${studentPoints})`
+                        }
+                        className={`py-2 px-2 rounded-xl text-[10px] font-bold border border-black/15 flex items-center justify-center gap-1 transition-all ${
+                          isActive ? 'ring-2 ring-indigo-500' : ''
+                        } ${!isUnlocked ? 'opacity-55 cursor-not-allowed' : 'cursor-pointer hover:scale-[1.02]'}`}
+                      >
+                        {!isUnlocked && <Lock className="w-3 h-3 shrink-0" />}
+                        <span className="truncate">
+                          {reward.icon} {isUnlocked ? reward.title.replace(/^Тема «|»$/g, '') : `${reward.requiredPoints} б.`}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -7,6 +7,7 @@ import { useReadingStore } from '@/store/useReadingStore';
 import { supabase } from '@/lib/supabase';
 import { BOOKS } from '@/data/books';
 import { Book } from '@/types/book';
+import { calculateStudentPoints, getAgeGroup, getStudentRank } from '@/lib/gamification';
 
 interface QuoteItem {
   text: string;
@@ -114,6 +115,21 @@ export const HeroBento: React.FC = () => {
   const isBookmarked = featuredBook ? myShelfIds.includes(featuredBook.id) : false;
   const startedCount = Object.keys(readingProgress).length;
 
+  const studentPoints = student
+    ? calculateStudentPoints(
+        Object.values(readingProgress).map((p) => ({
+          progressPercent: p.percent || 0,
+          readingSeconds: p.readingSeconds || 0,
+          pagesTurned: p.pagesTurned || 0,
+          fastTurnsCount: p.fastTurnsCount || 0,
+          avgSecondsPerPage: p.avgSecondsPerPage || 0,
+          minSecondsPerPage: p.minSecondsPerPage ?? null,
+        })),
+        student.gradeClass
+      ).totalPoints
+    : 0;
+  const studentRank = student ? getStudentRank(studentPoints, getAgeGroup(student.gradeClass)) : null;
+
   const handleNextQuote = () => {
     if (quotes.length > 1) {
       setQuoteIdx((prev) => (prev + 1) % quotes.length);
@@ -212,25 +228,41 @@ export const HeroBento: React.FC = () => {
         <div>
           <div className="flex items-center justify-between mb-4">
             <div className="w-10 h-10 rounded-2xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold">
-              <Trophy className="w-5 h-5" />
+              {studentRank ? <span className="text-lg">{studentRank.current.icon}</span> : <Trophy className="w-5 h-5" />}
             </div>
-            <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
-              В процессе: {startedCount}
-            </span>
+            {student ? (
+              <span className="text-xs font-extrabold font-mono px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                ⭐ {studentPoints} б.
+              </span>
+            ) : (
+              <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+                В процессе: {startedCount}
+              </span>
+            )}
           </div>
 
           <h3 className="text-lg font-bold text-[#191C20] dark:text-[#E2E2E9] mb-1">
-            Читательский дневник
+            {studentRank ? studentRank.current.title : 'Читательский дневник'}
           </h3>
           <p className="text-xs text-[#74777F] dark:text-[#90939C] mb-4">
-            В закладках: {myShelfIds.length} • Начато книг: {startedCount}
+            {studentRank
+              ? studentRank.next
+                ? `До «${studentRank.next.title}»: ещё ${studentRank.pointsToNext} б.`
+                : 'Максимальный ранг достигнут!'
+              : `В закладках: ${myShelfIds.length} • Начато книг: ${startedCount}`}
           </p>
 
           <div className="space-y-1.5 mb-5">
             <div className="w-full bg-[#E0E2EC] dark:bg-[#323640] h-3 rounded-full overflow-hidden p-0.5">
               <div
                 className="bg-gradient-to-r from-[#3F51B5] to-[#8C9EFF] h-full rounded-full transition-all duration-500"
-                style={{ width: `${Math.min(100, Math.max(10, startedCount * 20))}%` }}
+                style={{
+                  width: `${
+                    studentRank
+                      ? Math.max(8, studentRank.progressPercent)
+                      : Math.min(100, Math.max(10, startedCount * 20))
+                  }%`,
+                }}
               />
             </div>
           </div>

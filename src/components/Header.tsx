@@ -1,16 +1,18 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { BookOpen, Search, Moon, Sun, X, User, LogOut, Bell } from 'lucide-react';
 import { useReadingStore } from '@/store/useReadingStore';
+import { calculateStudentPoints, getFrameRewardById } from '@/lib/gamification';
 
 export const Header: React.FC = () => {
   const { 
     searchQuery, setSearchQuery, setActiveTab, 
     student, isLoginModalOpen, setLoginModalOpen, 
     loginStudent, logoutStudent, syncFromSupabase,
-    unreadMessagesCount, fetchUnreadMessagesCount
+    unreadMessagesCount, fetchUnreadMessagesCount,
+    readingProgress, equippedFrameId
   } = useReadingStore();
   
   const [isDark, setIsDark] = useState(false);
@@ -47,6 +49,27 @@ export const Header: React.FC = () => {
   const initials = student
     ? student.fullName.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
     : '';
+
+  const pointsSummary = useMemo(() => {
+    if (!student) return null;
+    return calculateStudentPoints(
+      Object.values(readingProgress).map((p) => ({
+        progressPercent: p.percent || 0,
+        readingSeconds: p.readingSeconds || 0,
+        pagesTurned: p.pagesTurned || 0,
+        fastTurnsCount: p.fastTurnsCount || 0,
+        avgSecondsPerPage: p.avgSecondsPerPage || 0,
+        minSecondsPerPage: p.minSecondsPerPage ?? null,
+      })),
+      student.gradeClass
+    );
+  }, [student, readingProgress]);
+
+  const activeFrame = useMemo(() => {
+    const reward = getFrameRewardById(equippedFrameId);
+    if (!reward || !pointsSummary || pointsSummary.totalPoints < reward.requiredPoints) return null;
+    return reward.frameStyle || null;
+  }, [equippedFrameId, pointsSummary]);
 
   return (
     <>
@@ -106,9 +129,24 @@ export const Header: React.FC = () => {
                   title="Открыть мой профиль и сообщения"
                 >
                   <div className="relative">
-                    <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center font-bold text-xs sm:text-sm shadow-sm">
+                    <div
+                      style={activeFrame ? { background: activeFrame.avatarBg } : undefined}
+                      className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full text-white flex items-center justify-center font-bold text-xs sm:text-sm shadow-sm ${
+                        activeFrame
+                          ? activeFrame.ringClass
+                          : 'bg-gradient-to-br from-indigo-500 to-purple-600'
+                      }`}
+                    >
                       {initials}
                     </div>
+                    {activeFrame && (
+                      <span
+                        className="absolute -bottom-1 -left-1 w-4 h-4 rounded-full bg-white dark:bg-[#1C1F26] shadow text-[10px] flex items-center justify-center"
+                        title={activeFrame.badgeText}
+                      >
+                        {activeFrame.badgeIcon}
+                      </span>
+                    )}
                     {unreadMessagesCount > 0 && (
                       <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-600 text-white text-[10px] font-extrabold flex items-center justify-center ring-2 ring-white dark:ring-[#111318]">
                         {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
@@ -116,8 +154,13 @@ export const Header: React.FC = () => {
                     )}
                   </div>
                   <div className="hidden sm:block text-left text-xs leading-tight">
-                    <div className="font-bold text-[#191C20] dark:text-[#E2E2E9] group-hover:text-[#3F51B5] dark:group-hover:text-[#A5B4FC] transition-colors flex items-center gap-1">
+                    <div className="font-bold text-[#191C20] dark:text-[#E2E2E9] group-hover:text-[#3F51B5] dark:group-hover:text-[#A5B4FC] transition-colors flex items-center gap-1.5">
                       <span>{student.fullName}</span>
+                      {pointsSummary && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 text-[10px] font-mono font-extrabold">
+                          ⭐ {pointsSummary.totalPoints}
+                        </span>
+                      )}
                     </div>
                     <div className="text-[#74777F] dark:text-[#90939C] flex items-center gap-1.5">
                       <span>{student.gradeClass} класс</span>

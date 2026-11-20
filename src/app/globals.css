@@ -41,3 +41,36 @@
   background-color: #121E1A;
   color: #D3E4DB;
 }
+.reader-theme-ocean {
+  background-color: #EEF7FB;
+  color: #133142;
+}
+.reader-theme-starry {
+  background-color: #13162B;
+  color: #E3E7FF;
+}
+.reader-theme-coffee {
+  background-color: #EFE5D5;
+  color: #3B2818;
+}
+.reader-theme-obsidian {
+  background-color: #0B0C10;
+  color: #E8EAF0;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #ngs-certificate-printable,
+  #ngs-certificate-printable * {
+    visibility: visible;
+  }
+  #ngs-certificate-printable {
+    position: fixed;
+    inset: 0;
+    margin: 0;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+}
