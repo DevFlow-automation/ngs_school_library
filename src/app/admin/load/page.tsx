@@ -3,12 +3,13 @@
 export const dynamic = 'force-dynamic';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import {
   Upload, CheckCircle2, FileText, Sparkles, Palette,
   Search, Trash2, Edit3, X, Plus, BookOpen, AlertTriangle,
   Quote, GraduationCap, Users, Lock, LogOut, Clock, Zap,
-  ShieldAlert, ShieldCheck, RefreshCw, MessageSquare, Send
+  ShieldAlert, ShieldCheck, RefreshCw, MessageSquare, Send, ExternalLink
 } from 'lucide-react';
 import {
   evaluateBookCompletion,
@@ -260,6 +261,10 @@ export default function AdminDashboardPage() {
     try {
       if (sessionStorage.getItem('ngs_admin_auth') === 'true') {
         setIsAuthorized(true);
+      }
+      const tab = new URLSearchParams(window.location.search).get('tab');
+      if (tab === 'students' || tab === 'manage' || tab === 'add' || tab === 'quotes') {
+        setActiveMode(tab);
       }
     } catch {}
     fetchBooks();
@@ -1050,9 +1055,14 @@ export default function AdminDashboardPage() {
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-bold text-sm text-gray-900 dark:text-white">
-                            {st.full_name}
-                          </span>
+                          <Link
+                            href={`/admin/students/${st.id}`}
+                            className="font-bold text-sm text-gray-900 dark:text-white hover:text-[#3F51B5] dark:hover:text-[#A5B4FC] hover:underline inline-flex items-center gap-1 transition-colors"
+                            title="Открыть страницу ученика (баллы, достижения, аватарки)"
+                          >
+                            <span>{st.full_name}</span>
+                            <ExternalLink className="w-3.5 h-3.5 opacity-60" />
+                          </Link>
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800">
                             {st.grade_class}
                           </span>
