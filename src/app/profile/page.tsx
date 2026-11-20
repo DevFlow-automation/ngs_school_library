@@ -4,6 +4,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/Header';
 import { ReaderModal } from '@/components/ReaderModal';
+import { StudentAvatar } from '@/components/StudentAvatar';
 import { useReadingStore } from '@/store/useReadingStore';
 import { supabase } from '@/lib/supabase';
 import { BOOKS } from '@/data/books';
@@ -18,6 +19,13 @@ import {
   getStudentRank,
   RewardCategory,
 } from '@/lib/gamification';
+import {
+  AVATAR_RARITY_META,
+  AvatarCategory,
+  getAvatarById,
+  getAvatarsForAgeGroup,
+  resolveEffectiveAvatarId,
+} from '@/lib/avatars';
 import {
   ArrowLeft,
   BookOpen,
@@ -77,6 +85,8 @@ export default function StudentProfilePage() {
     setReaderTheme,
     equippedFrameId,
     setEquippedFrameId,
+    equippedAvatarId,
+    setEquippedAvatarId,
   } = useReadingStore();
 
   const [booksMap, setBooksMap] = useState<Record<string, Book>>({});
@@ -84,6 +94,7 @@ export default function StudentProfilePage() {
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [rewardFilter, setRewardFilter] = useState<'all' | RewardCategory>('all');
+  const [avatarFilter, setAvatarFilter] = useState<'all' | AvatarCategory>('all');
   const [showCertificateModal, setShowCertificateModal] = useState(false);
 
   const loadBooks = useCallback(async () => {
@@ -274,14 +285,26 @@ export default function StudentProfilePage() {
     return reward;
   }, [equippedFrameId, pointsBreakdown.totalPoints]);
 
-  const initials = student
-    ? student.fullName
-        .split(' ')
-        .map((n) => n[0])
-        .join('')
-        .slice(0, 2)
-        .toUpperCase()
-    : '';
+  const allAvatars = useMemo(() => getAvatarsForAgeGroup(ageGroup), [ageGroup]);
+  const filteredAvatars = useMemo(
+    () =>
+      avatarFilter === 'all'
+        ? allAvatars
+        : allAvatars.filter((av) => av.category === avatarFilter),
+    [allAvatars, avatarFilter]
+  );
+  const unlockedAvatarsCount = useMemo(
+    () => allAvatars.filter((av) => pointsBreakdown.totalPoints >= av.requiredPoints).length,
+    [allAvatars, pointsBreakdown.totalPoints]
+  );
+  const effectiveAvatarId = useMemo(
+    () => resolveEffectiveAvatarId(equippedAvatarId, pointsBreakdown.totalPoints, ageGroup),
+    [equippedAvatarId, pointsBreakdown.totalPoints, ageGroup]
+  );
+  const activeAvatar = useMemo(
+    () => getAvatarById(effectiveAvatarId, ageGroup),
+    [effectiveAvatarId, ageGroup]
+  );
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -359,18 +382,15 @@ export default function StudentProfilePage() {
               <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-5">
                 <div className="flex items-center gap-4">
                   <div className="relative shrink-0">
-                    <div
-                      style={
+                    <StudentAvatar
+                      avatarId={effectiveAvatarId}
+                      size={80}
+                      className={`shadow-xl ${
                         activeFrameReward?.frameStyle
-                          ? { background: activeFrameReward.frameStyle.avatarBg }
-                          : undefined
-                      }
-                      className={`w-16 h-16 sm:w-20 sm:h-20 rounded-3xl backdrop-blur-md border border-white/25 flex items-center justify-center font-extrabold text-2xl sm:text-3xl shadow-lg ${
-                        activeFrameReward?.frameStyle ? '' : 'bg-white/15'
+                          ? activeFrameReward.frameStyle.ringClass
+                          : AVATAR_RARITY_META[activeAvatar.rarity].ringClass
                       }`}
-                    >
-                      {initials}
-                    </div>
+                    />
                     <span
                       className="absolute -bottom-1.5 -right-1.5 w-7 h-7 rounded-xl bg-white text-base shadow-md flex items-center justify-center"
                       title={activeFrameReward?.title || rankProgress.current.title}
@@ -469,6 +489,166 @@ export default function StudentProfilePage() {
                     {unlockedRewardsCount}/{ageRewards.length}
                   </div>
                 </div>
+              </div>
+            </section>
+
+            {/* Коллекция аватарок (разблокируются за баллы, без ручной загрузки) */}
+            <section
+              id="avatars"
+              className="bg-white dark:bg-[#1C1F26] rounded-[28px] p-6 border border-[#E0E2EC]/70 dark:border-[#2F323D] shadow-sm space-y-5"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <StudentAvatar
+                    avatarId={effectiveAvatarId}
+                    size={42}
+                    className={AVATAR_RARITY_META[activeAvatar.rarity].ringClass}
+                  />
+                  <div>
+                    <h2 className="text-base sm:text-lg font-extrabold text-[#191C20] dark:text-white flex flex-wrap items-center gap-2">
+                      <span>Коллекция аватарок</span>
+                      <span className="px-2.5 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 text-[11px] font-mono font-bold">
+                        {unlockedAvatarsCount}/{allAvatars.length}
+                      </span>
+                    </h2>
+                    <p className="text-xs text-[#74777F] dark:text-[#90939C]">
+                      Своё фото загружать нельзя — новые аватарки открываются автоматически за баллы чтения
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(
+                    [
+                      ['all', 'Все'],
+                      ['games', 'Игры'],
+                      ['writers', 'Писатели'],
+                      ['exclusive', 'Премиум и Легенда'],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setAvatarFilter(key)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+                        avatarFilter === key
+                          ? 'bg-[#3F51B5] text-white shadow-sm'
+                          : 'bg-[#EEF0FA] dark:bg-[#22252D] text-[#44474F] dark:text-[#C4C7D0] hover:bg-[#E0E2EC]'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
+                {filteredAvatars.map((av) => {
+                  const isUnlocked = pointsBreakdown.totalPoints >= av.requiredPoints;
+                  const isSelected = effectiveAvatarId === av.id;
+                  const rarityMeta = AVATAR_RARITY_META[av.rarity];
+                  const pct =
+                    av.requiredPoints === 0
+                      ? 100
+                      : Math.min(
+                          100,
+                          Math.round((pointsBreakdown.totalPoints / av.requiredPoints) * 100)
+                        );
+
+                  return (
+                    <div
+                      key={av.id}
+                      className={`p-3.5 rounded-2xl border flex flex-col justify-between gap-3 text-center transition-all ${
+                        isSelected
+                          ? 'border-[#3F51B5] ring-2 ring-[#3F51B5]/40 bg-indigo-50/50 dark:bg-indigo-950/25'
+                          : rarityMeta.cardClass
+                      }`}
+                    >
+                      <div className="space-y-2.5">
+                        <div className="flex items-center justify-between gap-1">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-wider ${rarityMeta.badgeClass}`}
+                          >
+                            {rarityMeta.label}
+                          </span>
+                          <span className="text-[10px] font-mono font-bold text-[#74777F] dark:text-[#90939C]">
+                            {av.requiredPoints === 0 ? 'Старт' : `${av.requiredPoints} б.`}
+                          </span>
+                        </div>
+
+                        <div className="relative mx-auto w-20 h-20 flex items-center justify-center">
+                          <StudentAvatar
+                            avatarId={av.id}
+                            size={76}
+                            className={`${rarityMeta.ringClass} transition-transform ${
+                              !isUnlocked ? 'opacity-75 grayscale-[25%]' : 'hover:scale-105'
+                            }`}
+                          />
+                          {!isUnlocked && (
+                            <span
+                              className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-gray-900/90 text-white flex items-center justify-center shadow-md border border-white/20"
+                              title={`Нужно ${av.requiredPoints} баллов`}
+                            >
+                              <Lock className="w-3 h-3" />
+                            </span>
+                          )}
+                          {isSelected && (
+                            <span className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-md border-2 border-white dark:border-[#1C1F26]">
+                              <Check className="w-3.5 h-3.5" />
+                            </span>
+                          )}
+                        </div>
+
+                        <div>
+                          <div className="font-extrabold text-xs text-[#191C20] dark:text-white leading-tight">
+                            {av.name}
+                          </div>
+                          <p className="text-[10.5px] text-[#74777F] dark:text-[#90939C] mt-1 leading-snug line-clamp-2">
+                            {av.subtitle}
+                          </p>
+                        </div>
+                      </div>
+
+                      {isUnlocked ? (
+                        <button
+                          type="button"
+                          onClick={() => setEquippedAvatarId(av.id)}
+                          disabled={isSelected}
+                          className={`w-full py-1.5 px-2.5 rounded-xl text-[11px] font-bold transition-all ${
+                            isSelected
+                              ? 'bg-emerald-600 text-white cursor-default'
+                              : av.rarity === 'premium'
+                              ? 'bg-gradient-to-r from-amber-500 to-yellow-500 hover:brightness-105 text-amber-950 shadow-sm'
+                              : av.rarity === 'legendary'
+                              ? 'bg-gradient-to-r from-emerald-600 to-teal-500 hover:brightness-105 text-white shadow-sm'
+                              : 'bg-[#3F51B5] hover:bg-[#303F9F] text-white'
+                          }`}
+                        >
+                          {isSelected ? '✓ Установлена' : 'Выбрать'}
+                        </button>
+                      ) : (
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-[10px] font-mono text-[#74777F]">
+                            <span>Ещё {av.requiredPoints - pointsBreakdown.totalPoints} б.</span>
+                            <span>{pct}%</span>
+                          </div>
+                          <div className="w-full h-1.5 rounded-full bg-[#E0E2EC] dark:bg-[#2E323D] overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${
+                                av.rarity === 'premium'
+                                  ? 'bg-amber-500'
+                                  : av.rarity === 'legendary'
+                                  ? 'bg-emerald-500'
+                                  : 'bg-[#3F51B5]'
+                              }`}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </section>
 

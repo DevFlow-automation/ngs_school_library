@@ -130,6 +130,7 @@ interface ReadingState {
   readerFontFamily: ReaderFont;
   readerTheme: ReaderTheme;
   equippedFrameId: string | null;
+  equippedAvatarId: string;
 
   setLoginModalOpen: (open: boolean) => void;
   loginStudent: (fullName: string, gradeClass: string) => Promise<void>;
@@ -153,6 +154,7 @@ interface ReadingState {
   setReaderFontFamily: (font: ReaderFont) => void;
   setReaderTheme: (theme: ReaderTheme) => void;
   setEquippedFrameId: (frameId: string | null) => void;
+  setEquippedAvatarId: (avatarId: string) => void;
 }
 
 export const useReadingStore = create<ReadingState>()(
@@ -176,6 +178,7 @@ export const useReadingStore = create<ReadingState>()(
       readerFontFamily: 'serif',
       readerTheme: 'paper',
       equippedFrameId: null,
+      equippedAvatarId: 'default_reader',
 
       setLoginModalOpen: (open) => set({ isLoginModalOpen: open }),
 
@@ -221,6 +224,7 @@ export const useReadingStore = create<ReadingState>()(
           readingProgress: {},
           unreadMessagesCount: 0,
           equippedFrameId: null,
+          equippedAvatarId: 'default_reader',
           readerTheme: 'paper',
         }),
 
@@ -461,6 +465,7 @@ export const useReadingStore = create<ReadingState>()(
       setReaderFontFamily: (font) => set({ readerFontFamily: font }),
       setReaderTheme: (theme) => set({ readerTheme: theme }),
       setEquippedFrameId: (frameId) => set({ equippedFrameId: frameId }),
+      setEquippedAvatarId: (avatarId) => set({ equippedAvatarId: avatarId }),
     }),
     {
       name: 'ngs-library-storage',
@@ -472,6 +477,7 @@ export const useReadingStore = create<ReadingState>()(
         readerFontFamily: state.readerFontFamily,
         readerTheme: state.readerTheme,
         equippedFrameId: state.equippedFrameId,
+        equippedAvatarId: state.equippedAvatarId,
       }),
     }
   )

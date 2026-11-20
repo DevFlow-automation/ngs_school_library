@@ -4,7 +4,9 @@ import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { BookOpen, Search, Moon, Sun, X, User, LogOut, Bell } from 'lucide-react';
 import { useReadingStore } from '@/store/useReadingStore';
-import { calculateStudentPoints, getFrameRewardById } from '@/lib/gamification';
+import { calculateStudentPoints, getAgeGroup, getFrameRewardById } from '@/lib/gamification';
+import { AVATAR_RARITY_META, getAvatarById, resolveEffectiveAvatarId } from '@/lib/avatars';
+import { StudentAvatar } from '@/components/StudentAvatar';
 
 export const Header: React.FC = () => {
   const { 
@@ -12,7 +14,7 @@ export const Header: React.FC = () => {
     student, isLoginModalOpen, setLoginModalOpen, 
     loginStudent, logoutStudent, syncFromSupabase,
     unreadMessagesCount, fetchUnreadMessagesCount,
-    readingProgress, equippedFrameId
+    readingProgress, equippedFrameId, equippedAvatarId
   } = useReadingStore();
   
   const [isDark, setIsDark] = useState(false);
@@ -46,10 +48,6 @@ export const Header: React.FC = () => {
     }
   };
 
-  const initials = student
-    ? student.fullName.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
-    : '';
-
   const pointsSummary = useMemo(() => {
     if (!student) return null;
     return calculateStudentPoints(
@@ -70,6 +68,16 @@ export const Header: React.FC = () => {
     if (!reward || !pointsSummary || pointsSummary.totalPoints < reward.requiredPoints) return null;
     return reward.frameStyle || null;
   }, [equippedFrameId, pointsSummary]);
+
+  const effectiveAvatar = useMemo(() => {
+    const ageGroup = getAgeGroup(student?.gradeClass);
+    const effectiveId = resolveEffectiveAvatarId(
+      equippedAvatarId,
+      pointsSummary?.totalPoints || 0,
+      ageGroup
+    );
+    return getAvatarById(effectiveId, ageGroup);
+  }, [equippedAvatarId, pointsSummary, student?.gradeClass]);
 
   return (
     <>
@@ -129,16 +137,15 @@ export const Header: React.FC = () => {
                   title="Открыть мой профиль и сообщения"
                 >
                   <div className="relative">
-                    <div
-                      style={activeFrame ? { background: activeFrame.avatarBg } : undefined}
-                      className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full text-white flex items-center justify-center font-bold text-xs sm:text-sm shadow-sm ${
+                    <StudentAvatar
+                      avatarId={effectiveAvatar.id}
+                      size={40}
+                      className={
                         activeFrame
                           ? activeFrame.ringClass
-                          : 'bg-gradient-to-br from-indigo-500 to-purple-600'
-                      }`}
-                    >
-                      {initials}
-                    </div>
+                          : AVATAR_RARITY_META[effectiveAvatar.rarity].ringClass
+                      }
+                    />
                     {activeFrame && (
                       <span
                         className="absolute -bottom-1 -left-1 w-4 h-4 rounded-full bg-white dark:bg-[#1C1F26] shadow text-[10px] flex items-center justify-center"
