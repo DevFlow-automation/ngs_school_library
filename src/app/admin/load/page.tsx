@@ -9,7 +9,7 @@ import {
   Upload, CheckCircle2, FileText, Sparkles, Palette,
   Search, Trash2, Edit3, X, Plus, BookOpen, AlertTriangle,
   Quote, GraduationCap, Users, Lock, LogOut, Clock, Zap,
-  ShieldAlert, ShieldCheck, RefreshCw, MessageSquare, Send, ExternalLink
+  ShieldAlert, ShieldCheck, RefreshCw, MessageSquare, Send, ExternalLink, Filter
 } from 'lucide-react';
 import {
   evaluateBookCompletion,
@@ -20,7 +20,8 @@ import {
 import {
   calculateStudentPoints,
   getAgeGroup,
-  getStudentRank
+  getStudentRank,
+  parseStudentGrade
 } from '@/lib/gamification';
 
 const COVER_GRADIENTS = [
@@ -117,6 +118,10 @@ export default function AdminDashboardPage() {
   const [booksList, setBooksList] = useState<DbBook[]>([]);
   const [isLoadingList, setIsLoadingList] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [bookGradeFilter, setBookGradeFilter] = useState<'all' | '5-7' | '8-9' | '10-11'>('all');
+  const [bookCategoryFilter, setBookCategoryFilter] = useState<'all' | 'classic' | 'scifi' | 'adventure' | 'fairy' | 'drama'>('all');
+  const [bookCurriculumFilter, setBookCurriculumFilter] = useState<'all' | 'curriculum' | 'extra'>('all');
+  const [bookSortBy, setBookSortBy] = useState<'newest' | 'title' | 'author' | 'grade'>('newest');
   const [editingBook, setEditingBook] = useState<DbBook | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [deletingBook, setDeletingBook] = useState<DbBook | null>(null);
@@ -145,7 +150,15 @@ export default function AdminDashboardPage() {
   // Ученики и прогресс
   const [studentsList, setStudentsList] = useState<StudentRow[]>([]);
   const [studentSearch, setStudentSearch] = useState('');
-  const [onlySuspicious, setOnlySuspicious] = useState(false);
+  const [studentClassFilter, setStudentClassFilter] = useState<string>('all');
+  const [studentAgeFilter, setStudentAgeFilter] = useState<'all' | 'junior' | 'middle' | 'senior'>('all');
+  const [studentBookFilter, setStudentBookFilter] = useState<string>('all');
+  const [studentStatusFilter, setStudentStatusFilter] = useState<
+    'all' | 'active' | 'completed' | 'inactive' | 'suspicious' | 'with-messages'
+  >('all');
+  const [studentSortBy, setStudentSortBy] = useState<
+    'newest' | 'points_desc' | 'time_desc' | 'name_asc' | 'class_asc'
+  >('newest');
 
   // Сообщения ученикам
   const [messagesByStudent, setMessagesByStudent] = useState<Record<string, StudentMessageItem[]>>({});
@@ -273,15 +286,42 @@ export default function AdminDashboardPage() {
   }, []);
 
   const filteredBooks = useMemo(() => {
-    if (!searchQuery.trim()) return booksList;
-    const q = searchQuery.toLowerCase();
-    return booksList.filter(
-      (b) =>
-        b.title.toLowerCase().includes(q) ||
-        b.author.toLowerCase().includes(q) ||
-        (b.synopsis && b.synopsis.toLowerCase().includes(q))
-    );
-  }, [booksList, searchQuery]);
+    const q = searchQuery.trim().toLowerCase();
+    const list = booksList.filter((b) => {
+      if (bookGradeFilter !== 'all' && b.grade !== bookGradeFilter) return false;
+      if (bookCategoryFilter !== 'all' && (b.category || 'classic') !== bookCategoryFilter) return false;
+      if (bookCurriculumFilter === 'curriculum' && !b.curriculum) return false;
+      if (bookCurriculumFilter === 'extra' && b.curriculum) return false;
+      if (q) {
+        const matches =
+          b.title.toLowerCase().includes(q) ||
+          b.author.toLowerCase().includes(q) ||
+          (b.synopsis && b.synopsis.toLowerCase().includes(q));
+        if (!matches) return false;
+      }
+      return true;
+    });
+
+    if (bookSortBy === 'title') return [...list].sort((a, b) => a.title.localeCompare(b.title, 'ru'));
+    if (bookSortBy === 'author') return [...list].sort((a, b) => a.author.localeCompare(b.author, 'ru'));
+    if (bookSortBy === 'grade') return [...list].sort((a, b) => a.grade.localeCompare(b.grade));
+    return list;
+  }, [booksList, searchQuery, bookGradeFilter, bookCategoryFilter, bookCurriculumFilter, bookSortBy]);
+
+  const hasActiveBookFilters =
+    Boolean(searchQuery.trim()) ||
+    bookGradeFilter !== 'all' ||
+    bookCategoryFilter !== 'all' ||
+    bookCurriculumFilter !== 'all' ||
+    bookSortBy !== 'newest';
+
+  const resetBookFilters = () => {
+    setSearchQuery('');
+    setBookGradeFilter('all');
+    setBookCategoryFilter('all');
+    setBookCurriculumFilter('all');
+    setBookSortBy('newest');
+  };
 
   const isStudentSuspicious = (st: StudentRow) =>
     (st.reading_progress || []).some((row) => {
@@ -296,17 +336,113 @@ export default function AdminDashboardPage() {
       return pace.status === 'suspicious';
     });
 
+  const getStudentPointsTotal = (st: StudentRow) =>
+    calculateStudentPoints(
+      (st.reading_progress || []).map((r) => ({
+        progressPercent: r.progress_percent || 0,
+        readingSeconds: r.reading_seconds || 0,
+        pagesTurned: r.pages_turned || 0,
+        fastTurnsCount: r.fast_turns_count || 0,
+        avgSecondsPerPage: r.avg_seconds_per_page || 0,
+        minSecondsPerPage: r.min_seconds_per_page ?? null,
+      })),
+      st.grade_class
+    ).totalPoints;
+
+  const getStudentReadingSeconds = (st: StudentRow) =>
+    (st.reading_progress || []).reduce((acc, r) => acc + Number(r.reading_seconds || 0), 0);
+
+  const studentHasCompletedBook = (st: StudentRow) =>
+    (st.reading_progress || []).some((r) => {
+      if ((r.progress_percent || 0) < 95) return false;
+      return evaluateBookCompletion({
+        progressPercent: r.progress_percent || 0,
+        readingSeconds: r.reading_seconds || 0,
+        pagesTurned: r.pages_turned || 0,
+        fastTurnsCount: r.fast_turns_count || 0,
+        avgSecondsPerPage: r.avg_seconds_per_page || 0,
+        minSecondsPerPage: r.min_seconds_per_page ?? null,
+      }).counted;
+    });
+
+  const availableStudentClasses = useMemo(() => {
+    const uniq = Array.from(new Set(studentsList.map((s) => s.grade_class).filter(Boolean)));
+    return uniq.sort((a, b) => {
+      const diff = parseStudentGrade(a) - parseStudentGrade(b);
+      return diff !== 0 ? diff : a.localeCompare(b, 'ru');
+    });
+  }, [studentsList]);
+
   const filteredStudents = useMemo(() => {
     const q = studentSearch.trim().toLowerCase();
-    return studentsList.filter((st) => {
-      if (onlySuspicious && !isStudentSuspicious(st)) return false;
+    const list = studentsList.filter((st) => {
+      if (studentClassFilter !== 'all' && st.grade_class !== studentClassFilter) return false;
+      if (studentAgeFilter !== 'all' && getAgeGroup(st.grade_class) !== studentAgeFilter) return false;
+      if (
+        studentBookFilter !== 'all' &&
+        !(st.reading_progress || []).some((r) => r.book_id === studentBookFilter)
+      ) {
+        return false;
+      }
+
+      if (studentStatusFilter === 'suspicious' && !isStudentSuspicious(st)) return false;
+      if (studentStatusFilter === 'active' && (st.reading_progress?.length || 0) === 0) return false;
+      if (studentStatusFilter === 'inactive' && (st.reading_progress?.length || 0) > 0) return false;
+      if (studentStatusFilter === 'completed' && !studentHasCompletedBook(st)) return false;
+      if (studentStatusFilter === 'with-messages' && (messagesByStudent[st.id]?.length || 0) === 0) {
+        return false;
+      }
+
       if (!q) return true;
       return (
         st.full_name.toLowerCase().includes(q) ||
         st.grade_class.toLowerCase().includes(q)
       );
     });
-  }, [studentsList, studentSearch, onlySuspicious]);
+
+    if (studentSortBy === 'points_desc') {
+      return [...list].sort((a, b) => getStudentPointsTotal(b) - getStudentPointsTotal(a));
+    }
+    if (studentSortBy === 'time_desc') {
+      return [...list].sort((a, b) => getStudentReadingSeconds(b) - getStudentReadingSeconds(a));
+    }
+    if (studentSortBy === 'name_asc') {
+      return [...list].sort((a, b) => a.full_name.localeCompare(b.full_name, 'ru'));
+    }
+    if (studentSortBy === 'class_asc') {
+      return [...list].sort((a, b) => {
+        const diff = parseStudentGrade(a.grade_class) - parseStudentGrade(b.grade_class);
+        return diff !== 0 ? diff : a.grade_class.localeCompare(b.grade_class, 'ru');
+      });
+    }
+    return list;
+  }, [
+    studentsList,
+    studentSearch,
+    studentClassFilter,
+    studentAgeFilter,
+    studentBookFilter,
+    studentStatusFilter,
+    studentSortBy,
+    messagesByStudent,
+  ]);
+
+  const hasActiveStudentFilters =
+    Boolean(studentSearch.trim()) ||
+    studentClassFilter !== 'all' ||
+    studentAgeFilter !== 'all' ||
+    studentBookFilter !== 'all' ||
+    studentStatusFilter !== 'all' ||
+    studentSortBy !== 'newest';
+
+  const resetStudentFilters = () => {
+    setStudentSearch('');
+    setStudentClassFilter('all');
+    setStudentAgeFilter('all');
+    setStudentBookFilter('all');
+    setStudentStatusFilter('all');
+    setStudentSortBy('newest');
+  };
 
   const suspiciousStudentsCount = useMemo(
     () => studentsList.filter((st) => isStudentSuspicious(st)).length,
@@ -679,7 +815,7 @@ export default function AdminDashboardPage() {
 
         {/* ВКЛАДКА 1: УПРАВЛЕНИЕ КНИГАМИ */}
         {activeMode === 'manage' && (
-          <div className="bg-white dark:bg-[#1C1F26] p-6 rounded-[28px] shadow-sm border border-gray-200/80 dark:border-gray-800 space-y-5">
+          <div className="bg-white dark:bg-[#1C1F26] p-6 rounded-[28px] shadow-sm border border-gray-200/80 dark:border-gray-800 space-y-4">
             <div className="relative">
               <Search className="w-4 h-4 absolute left-4 top-3.5 text-gray-400" />
               <input
@@ -687,7 +823,7 @@ export default function AdminDashboardPage() {
                 placeholder="Поиск книги по названию, автору или описанию..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-11 pr-4 py-3 rounded-2xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-sm outline-none focus:border-indigo-500 transition-colors"
+                className="w-full pl-11 pr-10 py-3 rounded-2xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-sm outline-none focus:border-indigo-500 transition-colors"
               />
               {searchQuery && (
                 <button
@@ -695,6 +831,76 @@ export default function AdminDashboardPage() {
                   className="absolute right-4 top-3.5 text-gray-400 hover:text-gray-600"
                 >
                   <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Панель фильтров и сортировки фонда */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <select
+                value={bookGradeFilter}
+                onChange={(e) => setBookGradeFilter(e.target.value as 'all' | '5-7' | '8-9' | '10-11')}
+                className="px-3 py-2 rounded-xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-xs font-semibold outline-none focus:border-indigo-500"
+              >
+                <option value="all">Все классы</option>
+                <option value="5-7">5–7 класс</option>
+                <option value="8-9">8–9 класс</option>
+                <option value="10-11">10–11 класс</option>
+              </select>
+
+              <select
+                value={bookCategoryFilter}
+                onChange={(e) =>
+                  setBookCategoryFilter(
+                    e.target.value as 'all' | 'classic' | 'scifi' | 'adventure' | 'fairy' | 'drama'
+                  )
+                }
+                className="px-3 py-2 rounded-xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-xs font-semibold outline-none focus:border-indigo-500"
+              >
+                <option value="all">Все жанры</option>
+                <option value="classic">Русская классика</option>
+                <option value="scifi">Фантастика</option>
+                <option value="adventure">Приключения</option>
+                <option value="fairy">Сказки и притчи</option>
+                <option value="drama">Драматургия</option>
+              </select>
+
+              <select
+                value={bookCurriculumFilter}
+                onChange={(e) => setBookCurriculumFilter(e.target.value as 'all' | 'curriculum' | 'extra')}
+                className="px-3 py-2 rounded-xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-xs font-semibold outline-none focus:border-indigo-500"
+              >
+                <option value="all">Любая программа</option>
+                <option value="curriculum">Школьная программа</option>
+                <option value="extra">Внеклассное чтение</option>
+              </select>
+
+              <select
+                value={bookSortBy}
+                onChange={(e) => setBookSortBy(e.target.value as 'newest' | 'title' | 'author' | 'grade')}
+                className="px-3 py-2 rounded-xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-xs font-semibold outline-none focus:border-indigo-500"
+              >
+                <option value="newest">Сначала новые</option>
+                <option value="title">По названию (А–Я)</option>
+                <option value="author">По автору (А–Я)</option>
+                <option value="grade">По классу</option>
+              </select>
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-gray-500">
+              <span className="inline-flex items-center gap-1.5">
+                <Filter className="w-3.5 h-3.5 text-indigo-500" />
+                <span>
+                  Показано: <b className="text-gray-800 dark:text-gray-200">{filteredBooks.length}</b> из {booksList.length}
+                </span>
+              </span>
+              {hasActiveBookFilters && (
+                <button
+                  type="button"
+                  onClick={resetBookFilters}
+                  className="text-indigo-600 dark:text-indigo-400 hover:underline font-bold"
+                >
+                  Сбросить фильтры
                 </button>
               )}
             </div>
@@ -979,7 +1185,7 @@ export default function AdminDashboardPage() {
 
         {/* ВКЛАДКА 4: ВСЕ УЧЕНИКИ И ИХ ПРОГРЕСС */}
         {activeMode === 'students' && (
-          <div className="bg-white dark:bg-[#1C1F26] p-6 rounded-[28px] shadow-sm border border-gray-200/80 dark:border-gray-800 space-y-5">
+          <div className="bg-white dark:bg-[#1C1F26] p-6 rounded-[28px] shadow-sm border border-gray-200/80 dark:border-gray-800 space-y-4">
             <div className="flex flex-col sm:flex-row gap-3">
               <div className="relative flex-1">
                 <Search className="w-4 h-4 absolute left-4 top-3.5 text-gray-400" />
@@ -988,16 +1194,27 @@ export default function AdminDashboardPage() {
                   placeholder="Поиск по имени ученика или классу..."
                   value={studentSearch}
                   onChange={(e) => setStudentSearch(e.target.value)}
-                  className="w-full pl-11 pr-4 py-3 rounded-2xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-sm outline-none focus:border-indigo-500"
+                  className="w-full pl-11 pr-10 py-3 rounded-2xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-sm outline-none focus:border-indigo-500"
                 />
+                {studentSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setStudentSearch('')}
+                    className="absolute right-4 top-3.5 text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setOnlySuspicious((prev) => !prev)}
+                  onClick={() =>
+                    setStudentStatusFilter((prev) => (prev === 'suspicious' ? 'all' : 'suspicious'))
+                  }
                   className={`px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-1.5 border ${
-                    onlySuspicious
+                    studentStatusFilter === 'suspicious'
                       ? 'bg-red-600 text-white border-red-600 shadow-sm'
                       : 'bg-red-50/70 dark:bg-red-950/20 text-red-700 dark:text-red-300 border-red-200 dark:border-red-900/40 hover:bg-red-100'
                   }`}
@@ -1017,11 +1234,121 @@ export default function AdminDashboardPage() {
               </div>
             </div>
 
+            {/* Панель фильтров и сортировки учеников */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+              <select
+                value={studentClassFilter}
+                onChange={(e) => setStudentClassFilter(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-xs font-semibold outline-none focus:border-indigo-500"
+              >
+                <option value="all">Все классы</option>
+                {availableStudentClasses.map((cls) => (
+                  <option key={cls} value={cls}>
+                    {cls} класс
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={studentAgeFilter}
+                onChange={(e) =>
+                  setStudentAgeFilter(e.target.value as 'all' | 'junior' | 'middle' | 'senior')
+                }
+                className="px-3 py-2 rounded-xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-xs font-semibold outline-none focus:border-indigo-500"
+              >
+                <option value="all">Все возрасты</option>
+                <option value="junior">1–6 классы</option>
+                <option value="middle">7–9 классы</option>
+                <option value="senior">10–11 классы</option>
+              </select>
+
+              <select
+                value={studentStatusFilter}
+                onChange={(e) =>
+                  setStudentStatusFilter(
+                    e.target.value as
+                      | 'all'
+                      | 'active'
+                      | 'completed'
+                      | 'inactive'
+                      | 'suspicious'
+                      | 'with-messages'
+                  )
+                }
+                className="px-3 py-2 rounded-xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-xs font-semibold outline-none focus:border-indigo-500"
+              >
+                <option value="all">Любой статус</option>
+                <option value="active">Читают книги</option>
+                <option value="completed">Есть дочитанные (100%)</option>
+                <option value="inactive">Ещё не начали читать</option>
+                <option value="suspicious">Подозрение на пролистывание</option>
+                <option value="with-messages">С сообщениями админа</option>
+              </select>
+
+              <select
+                value={studentBookFilter}
+                onChange={(e) => setStudentBookFilter(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-xs font-semibold outline-none focus:border-indigo-500"
+              >
+                <option value="all">Все книги</option>
+                {booksList.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.title}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={studentSortBy}
+                onChange={(e) =>
+                  setStudentSortBy(
+                    e.target.value as 'newest' | 'points_desc' | 'time_desc' | 'name_asc' | 'class_asc'
+                  )
+                }
+                className="px-3 py-2 rounded-xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-xs font-semibold outline-none focus:border-indigo-500 col-span-2 sm:col-span-1"
+              >
+                <option value="newest">Сначала новые</option>
+                <option value="points_desc">По баллам (сначала больше)</option>
+                <option value="time_desc">По времени чтения</option>
+                <option value="name_asc">По имени (А–Я)</option>
+                <option value="class_asc">По классу</option>
+              </select>
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-gray-500">
+              <span className="inline-flex items-center gap-1.5">
+                <Filter className="w-3.5 h-3.5 text-indigo-500" />
+                <span>
+                  Показано: <b className="text-gray-800 dark:text-gray-200">{filteredStudents.length}</b> из {studentsList.length}
+                </span>
+              </span>
+              {hasActiveStudentFilters && (
+                <button
+                  type="button"
+                  onClick={resetStudentFilters}
+                  className="text-indigo-600 dark:text-indigo-400 hover:underline font-bold"
+                >
+                  Сбросить фильтры
+                </button>
+              )}
+            </div>
+
             {filteredStudents.length === 0 ? (
-              <div className="py-12 text-center text-xs text-gray-400">
-                {onlySuspicious
-                  ? 'Учеников с подозрением на быстрое пролистывание нет.'
-                  : 'Пока нет зарегистрированных учеников.'}
+              <div className="py-12 text-center text-xs text-gray-400 space-y-2">
+                <p>
+                  {hasActiveStudentFilters
+                    ? 'По выбранным фильтрам ученики не найдены.'
+                    : 'Пока нет зарегистрированных учеников.'}
+                </p>
+                {hasActiveStudentFilters && (
+                  <button
+                    type="button"
+                    onClick={resetStudentFilters}
+                    className="text-indigo-600 dark:text-indigo-400 font-bold hover:underline"
+                  >
+                    Сбросить фильтры
+                  </button>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
