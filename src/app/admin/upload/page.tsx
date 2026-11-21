@@ -121,6 +121,7 @@ export default function AdminUploadPage() {
                 onChange={(e) => setGrade(e.target.value)}
                 className="mt-1 w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent text-sm"
               >
+                <option value="1-4">1–4 класс</option>
                 <option value="5-7">5–7 класс</option>
                 <option value="8-9">8–9 класс</option>
                 <option value="10-11">10–11 класс</option>

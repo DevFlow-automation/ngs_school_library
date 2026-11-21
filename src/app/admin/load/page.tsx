@@ -5,7 +5,8 @@ export const dynamic = 'force-dynamic';
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { fetchRawBooksMetadataForAdmin, invalidateBooksCache } from '@/lib/booksService';
+import { compareBookGrades, fetchRawBooksMetadataForAdmin, invalidateBooksCache } from '@/lib/booksService';
+import type { GradeFilter } from '@/types/book';
 import {
   Upload, CheckCircle2, FileText, Sparkles, Palette,
   Search, Trash2, Edit3, X, Plus, BookOpen, AlertTriangle,
@@ -119,7 +120,7 @@ export default function AdminDashboardPage() {
   const [booksList, setBooksList] = useState<DbBook[]>([]);
   const [isLoadingList, setIsLoadingList] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [bookGradeFilter, setBookGradeFilter] = useState<'all' | '5-7' | '8-9' | '10-11'>('all');
+  const [bookGradeFilter, setBookGradeFilter] = useState<GradeFilter>('all');
   const [bookCategoryFilter, setBookCategoryFilter] = useState<'all' | 'classic' | 'scifi' | 'adventure' | 'fairy' | 'drama'>('all');
   const [bookCurriculumFilter, setBookCurriculumFilter] = useState<'all' | 'curriculum' | 'extra'>('all');
   const [bookSortBy, setBookSortBy] = useState<'newest' | 'title' | 'author' | 'grade'>('newest');
@@ -304,7 +305,7 @@ export default function AdminDashboardPage() {
 
     if (bookSortBy === 'title') return [...list].sort((a, b) => a.title.localeCompare(b.title, 'ru'));
     if (bookSortBy === 'author') return [...list].sort((a, b) => a.author.localeCompare(b.author, 'ru'));
-    if (bookSortBy === 'grade') return [...list].sort((a, b) => a.grade.localeCompare(b.grade));
+    if (bookSortBy === 'grade') return [...list].sort((a, b) => compareBookGrades(a.grade, b.grade));
     return list;
   }, [booksList, searchQuery, bookGradeFilter, bookCategoryFilter, bookCurriculumFilter, bookSortBy]);
 
@@ -842,10 +843,11 @@ export default function AdminDashboardPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <select
                 value={bookGradeFilter}
-                onChange={(e) => setBookGradeFilter(e.target.value as 'all' | '5-7' | '8-9' | '10-11')}
+                onChange={(e) => setBookGradeFilter(e.target.value as GradeFilter)}
                 className="px-3 py-2 rounded-xl bg-[#F8F9FE] dark:bg-[#14161C] border border-gray-200 dark:border-gray-700 text-xs font-semibold outline-none focus:border-indigo-500"
               >
                 <option value="all">Все классы</option>
+                <option value="1-4">1–4 класс</option>
                 <option value="5-7">5–7 класс</option>
                 <option value="8-9">8–9 класс</option>
                 <option value="10-11">10–11 класс</option>
@@ -1036,6 +1038,7 @@ export default function AdminDashboardPage() {
                     onChange={(e) => setGrade(e.target.value)}
                     className="mt-1 w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent text-sm"
                   >
+                    <option value="1-4">1–4 класс</option>
                     <option value="5-7">5–7 класс</option>
                     <option value="8-9">8–9 класс</option>
                     <option value="10-11">10–11 класс</option>
@@ -1707,6 +1710,7 @@ export default function AdminDashboardPage() {
                     onChange={(e) => setEditingBook({ ...editingBook, grade: e.target.value })}
                     className="mt-1 w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent text-sm"
                   >
+                    <option value="1-4">1–4 класс</option>
                     <option value="5-7">5–7 класс</option>
                     <option value="8-9">8–9 класс</option>
                     <option value="10-11">10–11 класс</option>

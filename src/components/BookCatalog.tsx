@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useReadingStore } from '@/store/useReadingStore';
 import { Book, GradeFilter, CategoryFilter, SortOption } from '@/types/book';
-import { fetchBooksMetadata, getCachedBooks } from '@/lib/booksService';
+import { compareBookGrades, fetchBooksMetadata, getCachedBooks } from '@/lib/booksService';
 import {
   Star,
   BookOpen,
@@ -138,7 +138,7 @@ export const BookCatalog: React.FC = () => {
     });
 
     // Если выбрана явная сортировка (по классам или алфавиту) — сортируем, иначе сохраняем случайный порядок
-    if (sortBy === 'grade') return [...result].sort((a, b) => a.grade.localeCompare(b.grade));
+    if (sortBy === 'grade') return [...result].sort((a, b) => compareBookGrades(a.grade, b.grade));
     if (sortBy === 'title') return [...result].sort((a, b) => a.title.localeCompare(b.title));
     return result;
   }, [allBooks, activeTab, gradeFilter, categoryFilter, searchQuery, sortBy, myShelfIds]);
@@ -169,13 +169,13 @@ export const BookCatalog: React.FC = () => {
           ))}
         </div>
 
-        <div className="flex items-center gap-3 text-xs self-start sm:self-auto">
-          <div className="flex items-center gap-1 bg-[#EEF0FA] dark:bg-[#22252D] p-1 rounded-full font-medium">
-            {(['all', '5-7', '8-9', '10-11'] as GradeFilter[]).map((g) => (
+        <div className="flex flex-wrap items-center gap-3 text-xs self-start sm:self-auto">
+          <div className="flex items-center gap-1 bg-[#EEF0FA] dark:bg-[#22252D] p-1 rounded-full font-medium overflow-x-auto max-w-full scrollbar-none">
+            {(['all', '1-4', '5-7', '8-9', '10-11'] as GradeFilter[]).map((g) => (
               <button
                 key={g}
                 onClick={() => setGradeFilter(g)}
-                className={`px-3 py-1 rounded-full transition-all ${
+                className={`px-3 py-1 rounded-full transition-all whitespace-nowrap shrink-0 ${
                   gradeFilter === g
                     ? 'bg-white dark:bg-[#343844] text-[#191C20] dark:text-white font-bold shadow-sm'
                     : 'text-[#74777F] dark:text-[#90939C]'

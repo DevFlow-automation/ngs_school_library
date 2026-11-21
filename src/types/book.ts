@@ -1,4 +1,5 @@
-export type GradeFilter = 'all' | '5-7' | '8-9' | '10-11';
+export type BookGrade = '1-4' | '5-7' | '8-9' | '10-11';
+export type GradeFilter = 'all' | BookGrade;
 export type CategoryFilter = 'all' | 'classic' | 'scifi' | 'adventure' | 'fairy' | 'drama';
 export type SortOption = 'popular' | 'grade' | 'title' | 'time';
 export type ReaderTheme =
@@ -22,7 +23,7 @@ export interface Book {
   title: string;
   author: string;
   year: number;
-  grade: '5-7' | '8-9' | '10-11';
+  grade: BookGrade;
   category: CategoryFilter;
   categoryName: string;
   readTime: string;

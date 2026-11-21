@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { BOOKS } from '@/data/books';
-import { Book, CategoryFilter, Chapter } from '@/types/book';
+import { Book, BookGrade, CategoryFilter, Chapter } from '@/types/book';
 
 export interface RawBookMetaRow {
   id: string;
@@ -48,9 +48,20 @@ function isMissingColumnError(error: { code?: string; message?: string } | null)
   );
 }
 
-function normalizeGrade(raw?: string | null): '5-7' | '8-9' | '10-11' {
-  if (raw === '5-7' || raw === '8-9' || raw === '10-11') return raw;
+const BOOK_GRADE_ORDER: readonly BookGrade[] = ['1-4', '5-7', '8-9', '10-11'];
+
+function normalizeGrade(raw?: string | null): BookGrade {
+  if (raw === '1-4' || raw === '5-7' || raw === '8-9' || raw === '10-11') return raw;
   return '10-11';
+}
+
+export function compareBookGrades(a?: string | null, b?: string | null): number {
+  const idxA = BOOK_GRADE_ORDER.indexOf((a || '') as BookGrade);
+  const idxB = BOOK_GRADE_ORDER.indexOf((b || '') as BookGrade);
+  if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+  if (idxA !== -1) return -1;
+  if (idxB !== -1) return 1;
+  return String(a || '').localeCompare(String(b || ''), 'ru', { numeric: true });
 }
 
 function normalizeCategory(raw?: string | null): CategoryFilter {
