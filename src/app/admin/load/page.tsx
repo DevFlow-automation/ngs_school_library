@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic';
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { fetchRawBooksMetadataForAdmin, invalidateBooksCache } from '@/lib/booksService';
 import {
   Upload, CheckCircle2, FileText, Sparkles, Palette,
   Search, Trash2, Edit3, X, Plus, BookOpen, AlertTriangle,
@@ -174,11 +175,10 @@ export default function AdminDashboardPage() {
   const fetchBooks = async () => {
     setIsLoadingList(true);
     try {
-      const { data } = await supabase
-        .from('books')
-        .select('*')
-        .order('created_at', { ascending: false });
-      if (data) setBooksList(data);
+      const data = await fetchRawBooksMetadataForAdmin();
+      setBooksList(data as unknown as DbBook[]);
+    } catch (err) {
+      console.error('Ошибка загрузки списка книг в админке:', err);
     } finally {
       setIsLoadingList(false);
     }
@@ -592,6 +592,7 @@ export default function AdminDashboardPage() {
       setIsCurriculum(false);
       setParsedChapters([]);
       setFileName('');
+      invalidateBooksCache();
       await fetchBooks();
     } catch (err) {
       console.error(err);
@@ -624,6 +625,7 @@ export default function AdminDashboardPage() {
       if (error) throw error;
 
       setEditingBook(null);
+      invalidateBooksCache();
       await fetchBooks();
     } catch (err) {
       console.error('Ошибка при обновлении:', err);
@@ -646,6 +648,7 @@ export default function AdminDashboardPage() {
       if (error) throw error;
 
       setDeletingBook(null);
+      invalidateBooksCache();
       await fetchBooks();
     } catch (err) {
       console.error('Ошибка при удалении:', err);

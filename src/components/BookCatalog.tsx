@@ -1,11 +1,28 @@
 'use client';
 
-import React, { useEffect, useState, useMemo } from 'react';
-import { BOOKS } from '@/data/books';
-import { supabase } from '@/lib/supabase';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useReadingStore } from '@/store/useReadingStore';
 import { Book, GradeFilter, CategoryFilter, SortOption } from '@/types/book';
-import { Star, BookOpen, Bookmark, Info, Sparkles, GraduationCap } from 'lucide-react';
+import { fetchBooksMetadata, getCachedBooks } from '@/lib/booksService';
+import {
+  Star,
+  BookOpen,
+  Bookmark,
+  Info,
+  GraduationCap,
+  Loader2,
+  RefreshCw,
+  AlertCircle,
+} from 'lucide-react';
+
+function shuffleBooks(items: Book[]): Book[] {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
 
 export const BookCatalog: React.FC = () => {
   const { 
@@ -22,78 +39,74 @@ export const BookCatalog: React.FC = () => {
     setSortBy
   } = useReadingStore();
 
-  const [dbBooks, setDbBooks] = useState<Book[]>([]);
+  const [dbBooks, setDbBooks] = useState<Book[]>(() => {
+    const cached = getCachedBooks();
+    return cached ? shuffleBooks(cached) : [];
+  });
+  const [isLoading, setIsLoading] = useState<boolean>(() => !getCachedBooks());
+  const [isSlowLoading, setIsSlowLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+
+  const loadBooks = useCallback(async (force = false) => {
+    setIsLoading(true);
+    setLoadError(false);
+    setIsSlowLoading(false);
+
+    const slowTimer = window.setTimeout(() => {
+      setIsSlowLoading(true);
+    }, 3500);
+
+    try {
+      const books = await fetchBooksMetadata({ force });
+      setDbBooks(shuffleBooks(books));
+    } catch (err) {
+      console.error('Ошибка загрузки книг:', err);
+      setLoadError(true);
+    } finally {
+      window.clearTimeout(slowTimer);
+      setIsLoading(false);
+      setIsSlowLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
-
-    async function fetchBooks() {
-      try {
-        const { data } = await supabase
-          .from('books')
-          .select('*')
-          .order('created_at', { ascending: false });
-
-        if (cancelled) return;
-
-        if (data && data.length > 0) {
-          const seenIds = new Set<string>();
-          const mapped: Book[] = [];
-
-          for (const b of data) {
-            if (!b?.id || seenIds.has(b.id)) continue;
-            seenIds.add(b.id);
-            mapped.push({
-              id: b.id,
-              title: b.title,
-              author: b.author,
-              year: b.year || 1850,
-              grade: b.grade || '10-11',
-              category: b.category || 'classic',
-              categoryName: b.category_name || 'Русская классика',
-              readTime: '2.5 ч',
-              readersCount: 1,
-              rating: 5.0,
-              curriculum: Boolean(b.curriculum), // Берем реальный флаг из базы
-              coverGradient: b.cover_gradient || 'linear-gradient(135deg, #4338CA 0%, #3B82F6 100%)',
-              accentColor: '#3B82F6',
-              synopsis: b.synopsis || '',
-              teacherNote: b.curriculum ? 'Входит в школьную программу' : 'Внеклассное чтение',
-              audioSample: '',
-              chapters: (b.chapters && b.chapters.length > 0) 
-                ? b.chapters 
-                : [{ title: 'Часть I', paragraphs: [b.synopsis || 'Текст произведения готовится к публикации.'] }],
-            });
-          }
-
-          // Синхронизируем общий кэш BOOKS для ReaderModal без дубликатов
-          mapped.forEach((book) => {
-            const existingIdx = BOOKS.findIndex((existing) => existing.id === book.id);
-            if (existingIdx >= 0) {
-              BOOKS[existingIdx] = book;
-            } else {
-              BOOKS.push(book);
-            }
-          });
-
-          // Перемешиваем книги случайным образом при загрузке страницы (алгоритм Фишера-Йетса)
-          for (let i = mapped.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [mapped[i], mapped[j]] = [mapped[j], mapped[i]];
-          }
-
-          setDbBooks(mapped);
-        } else {
-          setDbBooks([]);
-        }
-      } catch (err) {
-        console.error('Ошибка загрузки книг:', err);
-      }
+    const cached = getCachedBooks();
+    if (cached) {
+      setDbBooks(shuffleBooks(cached));
+      setIsLoading(false);
+      return;
     }
 
-    fetchBooks();
+    setIsLoading(true);
+    setLoadError(false);
+    setIsSlowLoading(false);
+
+    const slowTimer = window.setTimeout(() => {
+      if (!cancelled) setIsSlowLoading(true);
+    }, 3500);
+
+    fetchBooksMetadata()
+      .then((books) => {
+        if (!cancelled) {
+          setDbBooks(shuffleBooks(books));
+        }
+      })
+      .catch((err) => {
+        console.error('Ошибка загрузки книг:', err);
+        if (!cancelled) setLoadError(true);
+      })
+      .finally(() => {
+        window.clearTimeout(slowTimer);
+        if (!cancelled) {
+          setIsLoading(false);
+          setIsSlowLoading(false);
+        }
+      });
+
     return () => {
       cancelled = true;
+      window.clearTimeout(slowTimer);
     };
   }, []);
 
@@ -186,7 +199,78 @@ export const BookCatalog: React.FC = () => {
       </div>
 
       {/* Сетка книг */}
-      {filteredBooks.length === 0 ? (
+      {isLoading ? (
+        <div className="space-y-5">
+          {/* Понятное уведомление пользователю во время загрузки */}
+          <div className="bg-indigo-50/90 dark:bg-indigo-950/40 border border-indigo-200/80 dark:border-indigo-800/60 rounded-[24px] px-5 py-4 flex items-center gap-3.5 shadow-sm">
+            <div className="w-10 h-10 rounded-2xl bg-[#3F51B5] text-white flex items-center justify-center shrink-0 shadow-sm">
+              <Loader2 className="w-5 h-5 animate-spin" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-extrabold text-[#191C20] dark:text-white">
+                Загружаем каталог библиотеки, пожалуйста, подождите…
+              </div>
+              <p className="text-xs text-[#44474F] dark:text-[#C4C7D0] mt-0.5">
+                {isSlowLoading
+                  ? 'Интернет немного медленный, не закрывайте страницу — книги уже почти готовы.'
+                  : 'Подготавливаем список книг — это займёт всего пару секунд.'}
+              </p>
+            </div>
+          </div>
+
+          {/* Карточки-скелетоны */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            {Array.from({ length: 6 }).map((_, idx) => (
+              <div
+                key={idx}
+                className="bg-white dark:bg-[#1C1F26] rounded-[28px] p-5 border border-[#E0E2EC]/60 dark:border-[#2F323D] shadow-sm space-y-4 animate-pulse"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="h-5 w-20 rounded-full bg-[#EEF0FA] dark:bg-[#262934]" />
+                  <div className="h-4 w-10 rounded-full bg-[#EEF0FA] dark:bg-[#262934]" />
+                </div>
+                <div className="flex gap-4 items-start">
+                  <div className="w-24 sm:w-28 aspect-[2/3] shrink-0 rounded-r-lg rounded-l-sm bg-[#EEF0FA] dark:bg-[#262934]" />
+                  <div className="flex-1 space-y-2.5 pt-1">
+                    <div className="h-3 w-24 rounded-full bg-[#EEF0FA] dark:bg-[#262934]" />
+                    <div className="h-5 w-full rounded-lg bg-[#EEF0FA] dark:bg-[#262934]" />
+                    <div className="h-3.5 w-2/3 rounded-lg bg-[#EEF0FA] dark:bg-[#262934]" />
+                    <div className="h-3 w-full rounded-lg bg-[#EEF0FA] dark:bg-[#262934]" />
+                    <div className="h-3 w-4/5 rounded-lg bg-[#EEF0FA] dark:bg-[#262934]" />
+                  </div>
+                </div>
+                <div className="h-9 w-full rounded-2xl bg-[#F4F6FD] dark:bg-[#232630]" />
+                <div className="flex gap-2 pt-2 border-t border-[#E0E2EC]/40 dark:border-[#2F323D]">
+                  <div className="h-10 flex-1 rounded-xl bg-[#EEF0FA] dark:bg-[#262934]" />
+                  <div className="h-10 w-10 rounded-xl bg-[#EEF0FA] dark:bg-[#262934]" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : loadError && allBooks.length === 0 ? (
+        <div className="py-12 px-6 bg-white dark:bg-[#1C1F26] rounded-[28px] border border-[#E0E2EC]/70 dark:border-[#2F323D] text-center space-y-3">
+          <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto">
+            <AlertCircle className="w-6 h-6" />
+          </div>
+          <div className="space-y-1">
+            <div className="text-sm font-extrabold text-[#191C20] dark:text-white">
+              Не удалось загрузить каталог книг
+            </div>
+            <p className="text-xs text-[#74777F] dark:text-[#90939C]">
+              Проверьте подключение к интернету и попробуйте обновить список.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => loadBooks(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3F51B5] hover:bg-[#303F9F] text-white text-xs font-bold shadow-sm transition-all"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span>Попробовать снова</span>
+          </button>
+        </div>
+      ) : filteredBooks.length === 0 ? (
         <div className="py-16 text-center text-sm text-gray-500">
           В этом разделе пока нет книг.
         </div>

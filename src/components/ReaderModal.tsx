@@ -2,12 +2,13 @@
 
 import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useReadingStore } from '@/store/useReadingStore';
-import { BOOKS } from '@/data/books';
+import { fetchBookWithChapters, getCachedBookById } from '@/lib/booksService';
 import { 
   ArrowLeft, Sliders, Bookmark, Search, 
-  ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X, Clock, Lock, AlertTriangle
+  ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X, Clock, Lock, AlertTriangle,
+  Loader2, RefreshCw, BookOpen
 } from 'lucide-react';
-import { ReaderTheme } from '@/types/book';
+import { Book, ReaderTheme } from '@/types/book';
 import {
   evaluateBookCompletion,
   formatReadingTimer,
@@ -47,6 +48,12 @@ export const ReaderModal: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(0);
   const [chapterSearch, setChapterSearch] = useState('');
   const [liveExtraSec, setLiveExtraSec] = useState(0);
+  const [loadedBook, setLoadedBook] = useState<Book | null>(null);
+  const [isLoadingBook, setIsLoadingBook] = useState(false);
+  const [isSlowBookLoad, setIsSlowBookLoad] = useState(false);
+  const [bookLoadError, setBookLoadError] = useState(false);
+  const [readyBookId, setReadyBookId] = useState<string | null>(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const textScrollRef = useRef<HTMLDivElement>(null);
 
   // Рефы для точного подсчёта активного времени чтения и скорости перелистывания
@@ -90,9 +97,71 @@ export const ReaderModal: React.FC = () => {
     [captureActiveSlice, recordReadingMetrics]
   );
 
-  const book = useMemo(() => {
-    return BOOKS.find((b) => b.id === activeBookId);
-  }, [activeBookId]);
+  // Ленивая подгрузка текста (chapters) только для открытой книги
+  useEffect(() => {
+    if (!activeBookId) {
+      setLoadedBook(null);
+      setIsLoadingBook(false);
+      setIsSlowBookLoad(false);
+      setBookLoadError(false);
+      setReadyBookId(null);
+      return;
+    }
+
+    let cancelled = false;
+    const cached = getCachedBookById(activeBookId);
+
+    if (cached && cached.chaptersLoaded && cached.chapters.length > 0) {
+      setLoadedBook(cached);
+      setIsLoadingBook(false);
+      setIsSlowBookLoad(false);
+      setBookLoadError(false);
+      return;
+    }
+
+    // Сразу показываем метаданные книги в шапке читалки, пока подгружается текст
+    setLoadedBook(cached || null);
+    setIsLoadingBook(true);
+    setIsSlowBookLoad(false);
+    setBookLoadError(false);
+    setReadyBookId(null);
+
+    const slowTimer = window.setTimeout(() => {
+      if (!cancelled) setIsSlowBookLoad(true);
+    }, 3500);
+
+    fetchBookWithChapters(activeBookId)
+      .then((fullBook) => {
+        if (cancelled) return;
+        if (fullBook) {
+          setLoadedBook(fullBook);
+          setBookLoadError(false);
+        } else {
+          setBookLoadError(true);
+        }
+      })
+      .catch((err) => {
+        console.error('Ошибка загрузки текста книги:', err);
+        if (!cancelled) setBookLoadError(true);
+      })
+      .finally(() => {
+        window.clearTimeout(slowTimer);
+        if (!cancelled) {
+          setIsLoadingBook(false);
+          setIsSlowBookLoad(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(slowTimer);
+    };
+  }, [activeBookId, reloadNonce]);
+
+  const book = loadedBook && loadedBook.id === activeBookId ? loadedBook : null;
+  const isBookReady = Boolean(
+    activeBookId && book && book.chaptersLoaded && book.chapters.length > 0 && !isLoadingBook
+  );
 
   const currentChapter = useMemo(() => {
     if (!book || !book.chapters || book.chapters.length === 0) {
@@ -132,12 +201,13 @@ export const ReaderModal: React.FC = () => {
   const totalPages = pages.length;
 
   useEffect(() => {
-    if (activeBookId) {
+    if (activeBookId && isBookReady && readyBookId !== activeBookId) {
       const savedPage = readingProgress[activeBookId]?.pageIndex || 0;
       setCurrentPage(savedPage < totalPages ? savedPage : 0);
       setShowMobileToc(false);
+      setReadyBookId(activeBookId);
     }
-  }, [activeBookId]);
+  }, [activeBookId, isBookReady, totalPages, readyBookId]);
 
   useEffect(() => {
     if (textScrollRef.current) {
@@ -146,14 +216,14 @@ export const ReaderModal: React.FC = () => {
   }, [currentPage, activeChapterIndex]);
 
   useEffect(() => {
-    if (activeBookId && book && totalChapters > 0) {
+    if (activeBookId && readyBookId === activeBookId && book && totalChapters > 0) {
       saveProgress(activeBookId, activeChapterIndex, currentPage, totalChapters, totalPages);
     }
-  }, [activeBookId, activeChapterIndex, currentPage, totalChapters, totalPages]);
+  }, [activeBookId, readyBookId, book, activeChapterIndex, currentPage, totalChapters, totalPages]);
 
   // Активный таймер чтения: пауза при скрытии вкладки/потере фокуса, автосохранение каждые 15 сек и при закрытии
   useEffect(() => {
-    if (!activeBookId) return;
+    if (!activeBookId || readyBookId !== activeBookId) return;
 
     unsavedReadingMsRef.current = 0;
     pageActiveMsRef.current = 0;
@@ -216,9 +286,85 @@ export const ReaderModal: React.FC = () => {
       flushReadingMetrics(activeBookId);
       activeSinceRef.current = null;
     };
-  }, [activeBookId, captureActiveSlice, flushReadingMetrics]);
+  }, [activeBookId, readyBookId, captureActiveSlice, flushReadingMetrics]);
 
-  if (!activeBookId || !book) return null;
+  if (!activeBookId) return null;
+
+  if (isLoadingBook || !isBookReady || !book) {
+    return (
+      <div className={`fixed inset-0 z-50 flex flex-col bg-white dark:bg-[#16171D] select-none transition-colors reader-theme-${readerTheme}`}>
+        <header className="h-14 px-3 sm:px-6 flex items-center justify-between border-b border-current/10 shrink-0 bg-white/80 dark:bg-black/30 backdrop-blur-md z-30 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              onClick={closeReader}
+              className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors shrink-0"
+              title="Закрыть книгу"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div className="text-xs font-bold truncate">
+              {book ? (
+                <>
+                  {book.title}{' '}
+                  <span className="hidden sm:inline opacity-70 font-normal">• {book.author}</span>
+                </>
+              ) : (
+                'Открываем книгу…'
+              )}
+            </div>
+          </div>
+        </header>
+
+        <div className="flex-1 flex items-center justify-center p-6">
+          {bookLoadError ? (
+            <div className="max-w-sm w-full rounded-[28px] border border-current/15 bg-black/[0.02] dark:bg-white/[0.04] p-6 text-center space-y-4">
+              <div className="w-12 h-12 rounded-2xl bg-red-500/15 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-extrabold">Не удалось загрузить текст книги</h3>
+                <p className="text-xs opacity-75">
+                  Проверьте подключение к интернету и попробуйте открыть книгу ещё раз.
+                </p>
+              </div>
+              <div className="flex flex-wrap justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReloadNonce((n) => n + 1)}
+                  className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Попробовать снова</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={closeReader}
+                  className="px-4 py-2.5 rounded-xl border border-current/20 text-xs font-bold hover:bg-black/5 dark:hover:bg-white/10"
+                >
+                  В каталог
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="max-w-sm w-full rounded-[28px] border border-current/15 bg-black/[0.02] dark:bg-white/[0.04] p-7 text-center space-y-3.5">
+              <div className="w-14 h-14 rounded-2xl bg-indigo-600/15 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mx-auto">
+                <BookOpen className="w-7 h-7" />
+              </div>
+              <div className="flex items-center justify-center gap-2 text-sm font-extrabold">
+                <Loader2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400 animate-spin shrink-0" />
+                <span>Открываем книгу, пожалуйста, подождите…</span>
+              </div>
+              <p className="text-xs opacity-75 leading-relaxed">
+                {isSlowBookLoad
+                  ? 'Книга объёмная или интернет немного медленный — ещё пару секунд, текст уже загружается…'
+                  : 'Загружаем главы и подготавливаем страницы для удобного чтения.'}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   const currentParagraphs = pages[currentPage] || [];
   const isLastPageOfChapter = currentPage === totalPages - 1;

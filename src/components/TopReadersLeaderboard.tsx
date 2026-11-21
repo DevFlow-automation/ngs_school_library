@@ -12,7 +12,7 @@ import {
 } from '@/lib/gamification';
 import { AVATAR_RARITY_META, getAvatarsForAgeGroup } from '@/lib/avatars';
 import { formatReadingDuration } from '@/lib/readingMetrics';
-import { Trophy, Sparkles, Clock, BookOpen } from 'lucide-react';
+import { Trophy, Sparkles, Clock, BookOpen, Loader2 } from 'lucide-react';
 
 interface RawStudentRow {
   id: string;
@@ -166,7 +166,53 @@ export const TopReadersLeaderboard: React.FC = () => {
     };
   }, [currentStudent, ranked, topThree]);
 
-  if (!isLoaded) return null;
+  if (!isLoaded) {
+    return (
+      <section className="bg-white dark:bg-[#1C1F26] rounded-[28px] p-5 sm:p-6 border border-[#E0E2EC]/70 dark:border-[#2F323D] shadow-sm space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 text-white flex items-center justify-center shadow-md shadow-amber-500/20 shrink-0">
+            <Trophy className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base sm:text-lg font-extrabold text-[#191C20] dark:text-white tracking-tight">
+                Рейтинг читателей — Топ-3 школы
+              </h2>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-[#3F51B5] dark:text-[#A5B4FC] text-[11px] font-bold">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Загружаем…
+              </span>
+            </div>
+            <p className="text-xs text-[#74777F] dark:text-[#90939C] mt-0.5">
+              Подождите секунду — подсчитываем баллы лучших читателей школы
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 animate-pulse">
+          {Array.from({ length: 3 }).map((_, idx) => (
+            <div
+              key={idx}
+              className="p-4 rounded-2xl border border-[#E0E2EC]/70 dark:border-[#2F323D] bg-[#F8F9FE] dark:bg-[#16181F] space-y-3"
+            >
+              <div className="flex items-center justify-between">
+                <div className="h-5 w-20 rounded-full bg-[#E0E2EC] dark:bg-[#2A2E39]" />
+                <div className="h-5 w-12 rounded-full bg-[#E0E2EC] dark:bg-[#2A2E39]" />
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-[#E0E2EC] dark:bg-[#2A2E39] shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 w-3/4 rounded-lg bg-[#E0E2EC] dark:bg-[#2A2E39]" />
+                  <div className="h-3 w-1/2 rounded-lg bg-[#E0E2EC] dark:bg-[#2A2E39]" />
+                </div>
+              </div>
+              <div className="h-3 w-2/3 rounded-lg bg-[#E0E2EC] dark:bg-[#2A2E39]" />
+            </div>
+          ))}
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="bg-white dark:bg-[#1C1F26] rounded-[28px] p-5 sm:p-6 border border-[#E0E2EC]/70 dark:border-[#2F323D] shadow-sm space-y-4">

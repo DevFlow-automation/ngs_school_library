@@ -9,6 +9,7 @@ import { useReadingStore } from '@/store/useReadingStore';
 import { supabase } from '@/lib/supabase';
 import { BOOKS } from '@/data/books';
 import { Book } from '@/types/book';
+import { fetchBooksMetadata, getCachedBooks } from '@/lib/booksService';
 import { evaluateBookCompletion, formatReadingDuration } from '@/lib/readingMetrics';
 import {
   calculateStudentPoints,
@@ -47,6 +48,7 @@ import {
   Trophy,
   Info,
   AlertTriangle,
+  Loader2,
 } from 'lucide-react';
 
 interface StudentMessageRow {
@@ -92,7 +94,15 @@ export default function StudentProfilePage() {
     setEquippedAvatarId,
   } = useReadingStore();
 
-  const [booksMap, setBooksMap] = useState<Record<string, Book>>({});
+  const [booksMap, setBooksMap] = useState<Record<string, Book>>(() => {
+    const cached = getCachedBooks();
+    if (!cached) return {};
+    const initial: Record<string, Book> = {};
+    for (const b of cached) {
+      initial[b.id] = b;
+    }
+    return initial;
+  });
   const [messages, setMessages] = useState<StudentMessageRow[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -101,50 +111,14 @@ export default function StudentProfilePage() {
   const [avatarFilter, setAvatarFilter] = useState<'all' | AvatarCategory>('all');
   const [showCertificateModal, setShowCertificateModal] = useState(false);
 
-  const loadBooks = useCallback(async () => {
+  const loadBooks = useCallback(async (force = false) => {
     try {
-      const { data } = await supabase
-        .from('books')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (data && data.length > 0) {
-        const nextMap: Record<string, Book> = {};
-        for (const b of data) {
-          if (!b?.id) continue;
-          const mapped: Book = {
-            id: b.id,
-            title: b.title,
-            author: b.author,
-            year: b.year || 1850,
-            grade: b.grade || '10-11',
-            category: b.category || 'classic',
-            categoryName: b.category_name || 'Русская классика',
-            readTime: '2.5 ч',
-            readersCount: 1,
-            rating: 5.0,
-            curriculum: Boolean(b.curriculum),
-            coverGradient: b.cover_gradient || 'linear-gradient(135deg, #4338CA 0%, #3B82F6 100%)',
-            accentColor: '#3B82F6',
-            synopsis: b.synopsis || '',
-            teacherNote: b.curriculum ? 'Входит в школьную программу' : 'Внеклассное чтение',
-            audioSample: '',
-            chapters:
-              b.chapters && b.chapters.length > 0
-                ? b.chapters
-                : [{ title: 'Часть I', paragraphs: [b.synopsis || 'Текст произведения готовится к публикации.'] }],
-          };
-          nextMap[mapped.id] = mapped;
-
-          const existingIdx = BOOKS.findIndex((existing) => existing.id === mapped.id);
-          if (existingIdx >= 0) {
-            BOOKS[existingIdx] = mapped;
-          } else {
-            BOOKS.push(mapped);
-          }
-        }
-        setBooksMap(nextMap);
+      const books = await fetchBooksMetadata({ force });
+      const nextMap: Record<string, Book> = {};
+      for (const b of books) {
+        nextMap[b.id] = b;
       }
+      setBooksMap(nextMap);
     } catch (err) {
       console.error('Ошибка загрузки книг для профиля:', err);
     }
@@ -175,10 +149,10 @@ export default function StudentProfilePage() {
     async (showSpinner = false) => {
       if (showSpinner) setIsRefreshing(true);
       try {
-        await loadBooks();
         if (student?.id) {
-          await Promise.all([syncFromSupabase(), loadMessages(student.id)]);
+          await Promise.all([loadBooks(showSpinner), syncFromSupabase(), loadMessages(student.id)]);
         } else {
+          await loadBooks(showSpinner);
           setMessages([]);
         }
       } finally {
@@ -488,6 +462,14 @@ export default function StudentProfilePage() {
                 </div>
               </div>
             </section>
+
+            {/* Полоска ожидания при первичной загрузке данных профиля */}
+            {isLoadingData && Object.keys(booksMap).length === 0 && (
+              <div className="px-4 py-3 rounded-2xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200/80 dark:border-indigo-800/60 flex items-center gap-2.5 text-xs font-semibold text-[#191C20] dark:text-indigo-100">
+                <Loader2 className="w-4 h-4 text-[#3F51B5] dark:text-[#A5B4FC] animate-spin shrink-0" />
+                <span>Загружаем список ваших книг и прогресс чтения, пожалуйста, подождите…</span>
+              </div>
+            )}
 
             {/* Полоска-уведомление о новых сообщениях (если не на вкладке Сообщения) */}
             {unreadCount > 0 && activeProfileTab !== 'messages' && (

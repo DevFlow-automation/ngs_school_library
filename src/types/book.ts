@@ -35,6 +35,9 @@ export interface Book {
   synopsis: string;
   teacherNote: string;
   audioSample: string;
+  isFeatured?: boolean;
+  createdAt?: string;
+  chaptersLoaded?: boolean;
   chapters: Chapter[];
 }
 

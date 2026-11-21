@@ -2,12 +2,12 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Sparkles, Bookmark, BookOpen, Trophy, RefreshCw, User, Bell } from 'lucide-react';
+import { Sparkles, Bookmark, BookOpen, Trophy, RefreshCw, User, Bell, Loader2 } from 'lucide-react';
 import { useReadingStore } from '@/store/useReadingStore';
 import { supabase } from '@/lib/supabase';
-import { BOOKS } from '@/data/books';
 import { Book } from '@/types/book';
 import { calculateStudentPoints, getAgeGroup, getStudentRank } from '@/lib/gamification';
+import { fetchBooksMetadata, getCachedBooks, selectFeaturedBook } from '@/lib/booksService';
 
 interface QuoteItem {
   text: string;
@@ -27,7 +27,11 @@ export const HeroBento: React.FC = () => {
     unreadMessagesCount,
   } = useReadingStore();
 
-  const [featuredBook, setFeaturedBook] = useState<Book | null>(null);
+  const [featuredBook, setFeaturedBook] = useState<Book | null>(() => {
+    const cached = getCachedBooks();
+    return cached ? selectFeaturedBook(cached) : null;
+  });
+  const [isLoadingFeatured, setIsLoadingFeatured] = useState<boolean>(() => !getCachedBooks());
 
   const [quotes, setQuotes] = useState<QuoteItem[]>([
     {
@@ -40,52 +44,18 @@ export const HeroBento: React.FC = () => {
   const [quoteIdx, setQuoteIdx] = useState(0);
 
   useEffect(() => {
-    // 1. Загрузка книги недели из Supabase
+    let cancelled = false;
+
+    // 1. Загрузка метаданных книги недели из общего кэша/запроса (без тяжелого текста chapters)
     async function fetchFeaturedBook() {
       try {
-        const { data } = await supabase
-          .from('books')
-          .select('*')
-          .order('created_at', { ascending: true });
-
-        if (data && data.length > 0) {
-          // Ищем закрепленную книгу (is_featured) или выбираем по номеру недели
-          const weekNumber = Math.floor(Date.now() / (7 * 86400000));
-          const raw = data.find((b) => b.is_featured) || data[weekNumber % data.length];
-
-          const mapped: Book = {
-            id: raw.id,
-            title: raw.title,
-            author: raw.author,
-            year: raw.year || 1850,
-            grade: raw.grade || '10-11',
-            category: raw.category || 'classic',
-            categoryName: raw.category_name || 'Русская классика',
-            readTime: '2.5 ч',
-            readersCount: 1,
-            rating: 5.0,
-            curriculum: Boolean(raw.curriculum),
-            coverGradient: raw.cover_gradient || 'linear-gradient(135deg, #8E2800 0%, #C84B12 50%, #F37021 100%)',
-            accentColor: '#3B82F6',
-            synopsis: raw.synopsis || `Произведение «${raw.title}» автора ${raw.author}.`,
-            teacherNote: raw.curriculum ? 'Входит в школьную программу' : 'Внеклассное чтение',
-            audioSample: '',
-            chapters: (raw.chapters && raw.chapters.length > 0)
-              ? raw.chapters
-              : [{ title: 'Часть I', paragraphs: [raw.synopsis || 'Текст произведения.'] }],
-          };
-
-          const existingIdx = BOOKS.findIndex((existing) => existing.id === mapped.id);
-          if (existingIdx >= 0) {
-            BOOKS[existingIdx] = mapped;
-          } else {
-            BOOKS.push(mapped);
-          }
-
-          setFeaturedBook(mapped);
-        }
+        const books = await fetchBooksMetadata();
+        if (cancelled) return;
+        setFeaturedBook(selectFeaturedBook(books));
       } catch (err) {
         console.error('Ошибка загрузки книги недели:', err);
+      } finally {
+        if (!cancelled) setIsLoadingFeatured(false);
       }
     }
 
@@ -97,7 +67,7 @@ export const HeroBento: React.FC = () => {
           .select('text, author, work, book_id')
           .order('created_at', { ascending: true });
 
-        if (data && data.length > 0) {
+        if (!cancelled && data && data.length > 0) {
           setQuotes(data);
           const dayNumber = Math.floor(Date.now() / 86400000);
           setQuoteIdx(dayNumber % data.length);
@@ -109,6 +79,9 @@ export const HeroBento: React.FC = () => {
 
     fetchFeaturedBook();
     fetchQuotes();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const currentQuote = quotes[quoteIdx] || quotes[0];
@@ -173,7 +146,11 @@ export const HeroBento: React.FC = () => {
                     </div>
                     <div className="border-t border-white/20 pt-2 flex items-center justify-between text-[9px] text-white/70 font-mono">
                       <span>{featuredBook.grade} кл</span>
-                      <span>{featuredBook.chapters.length} гл.</span>
+                      <span>
+                        {featuredBook.chaptersLoaded && featuredBook.chapters.length > 0
+                          ? `${featuredBook.chapters.length} гл.`
+                          : 'Онлайн'}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -212,13 +189,41 @@ export const HeroBento: React.FC = () => {
                 <span>{featuredBook.teacherNote}</span>
               </div>
               <span className="font-mono text-[11px] text-white/60">
-                Доступно глав: {featuredBook.chapters.length}
+                {featuredBook.chaptersLoaded && featuredBook.chapters.length > 0
+                  ? `Доступно глав: ${featuredBook.chapters.length}`
+                  : 'Готово к чтению онлайн'}
               </span>
             </div>
           </>
+        ) : isLoadingFeatured ? (
+          <div className="relative z-10 space-y-5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-white/15 text-[#FFE082] border border-white/10">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Загружаем произведение недели…
+              </span>
+              <div className="h-4 w-28 rounded-full bg-white/10 animate-pulse" />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-6 items-center">
+              <div className="sm:col-span-5 flex justify-center">
+                <div className="w-36 sm:w-44 aspect-[2/3] rounded-r-xl rounded-l-md bg-white/10 animate-pulse border border-white/15" />
+              </div>
+              <div className="sm:col-span-7 space-y-3">
+                <div className="h-7 w-4/5 rounded-xl bg-white/15 animate-pulse" />
+                <div className="space-y-2">
+                  <div className="h-3.5 w-full rounded-lg bg-white/10 animate-pulse" />
+                  <div className="h-3.5 w-5/6 rounded-lg bg-white/10 animate-pulse" />
+                </div>
+                <p className="text-xs text-indigo-100/80 pt-1">
+                  Пожалуйста, подождите пару секунд — подбираем книгу для вас.
+                </p>
+              </div>
+            </div>
+          </div>
         ) : (
           <div className="my-auto py-12 text-center text-sm text-indigo-200">
-            Загрузка произведения недели...
+            Произведения недели скоро появятся в библиотеке.
           </div>
         )}
       </div>
