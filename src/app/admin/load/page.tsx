@@ -11,8 +11,14 @@ import {
   Upload, CheckCircle2, FileText, Sparkles, Palette,
   Search, Trash2, Edit3, X, Plus, BookOpen, AlertTriangle,
   Quote, GraduationCap, Users, Lock, LogOut, Clock, Zap,
-  ShieldAlert, ShieldCheck, RefreshCw, MessageSquare, Send, ExternalLink, Filter
+  Shield, ShieldAlert, ShieldCheck, RefreshCw, MessageSquare, Send, ExternalLink, Filter
 } from 'lucide-react';
+import { AdminsManagerTab } from '@/components/AdminsManagerTab';
+import {
+  ADMIN_ROLE_LABELS,
+  formatAdminSenderName,
+  type AdminSessionUser,
+} from '@/lib/adminTypes';
 import {
   evaluateBookCompletion,
   evaluateReadingPace,
@@ -108,13 +114,20 @@ interface StudentRow {
 
 export default function AdminDashboardPage() {
   // Авторизация админа
-  const [isAuthorized, setIsAuthorized] = useState(false);
+  const [currentAdmin, setCurrentAdmin] = useState<AdminSessionUser | null>(null);
+  const [isBootingAuth, setIsBootingAuth] = useState(true);
   const [adminPassword, setAdminPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [isCheckingAuth, setIsCheckingAuth] = useState(false);
+  const [adminsCount, setAdminsCount] = useState<number | null>(null);
+
+  const isAuthorized = Boolean(currentAdmin);
+  const isSuperadmin = currentAdmin?.role === 'superadmin';
+  const canManageLibrary =
+    currentAdmin?.role === 'superadmin' || currentAdmin?.role === 'admin';
 
   // Вкладки
-  const [activeMode, setActiveMode] = useState<'manage' | 'add' | 'quotes' | 'students'>('manage');
+  const [activeMode, setActiveMode] = useState<'manage' | 'add' | 'quotes' | 'students' | 'admins'>('manage');
 
   // Книги
   const [booksList, setBooksList] = useState<DbBook[]>([]);
@@ -241,7 +254,7 @@ export default function AdminDashboardPage() {
           student_id: messageTarget.student.id,
           book_id: messageTarget.bookId,
           book_title: messageTarget.bookTitle,
-          sender_name: 'Администратор библиотеки',
+          sender_name: formatAdminSenderName(currentAdmin),
           message: messageDraft.trim(),
           is_read: false,
         },
@@ -271,20 +284,69 @@ export default function AdminDashboardPage() {
     await fetchActivity();
   };
 
+  const resolveAllowedTab = (
+    role: AdminSessionUser['role'],
+    requestedTab: string | null
+  ): 'manage' | 'add' | 'quotes' | 'students' | 'admins' => {
+    if (role === 'supervisor') return 'students';
+    if (requestedTab === 'admins' && role === 'superadmin') return 'admins';
+    if (
+      requestedTab === 'students' ||
+      requestedTab === 'manage' ||
+      requestedTab === 'add' ||
+      requestedTab === 'quotes'
+    ) {
+      return requestedTab;
+    }
+    return 'manage';
+  };
+
   useEffect(() => {
-    try {
-      if (sessionStorage.getItem('ngs_admin_auth') === 'true') {
-        setIsAuthorized(true);
+    let cancelled = false;
+    const checkSession = async () => {
+      try {
+        const res = await fetch('/api/admin-auth', { cache: 'no-store' });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled && res.ok && data?.authenticated && data?.admin) {
+          const adminUser = data.admin as AdminSessionUser;
+          setCurrentAdmin(adminUser);
+          const tab = new URLSearchParams(window.location.search).get('tab');
+          setActiveMode(resolveAllowedTab(adminUser.role, tab));
+        } else if (!cancelled) {
+          try {
+            sessionStorage.removeItem('ngs_admin_auth');
+          } catch {}
+        }
+      } catch {
+        // Оставляем экран входа
+      } finally {
+        if (!cancelled) setIsBootingAuth(false);
       }
-      const tab = new URLSearchParams(window.location.search).get('tab');
-      if (tab === 'students' || tab === 'manage' || tab === 'add' || tab === 'quotes') {
-        setActiveMode(tab);
-      }
-    } catch {}
-    fetchBooks();
-    fetchQuotes();
-    fetchActivity();
+    };
+    checkSession();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!currentAdmin) return;
+    fetchBooks();
+    fetchActivity();
+    if (currentAdmin.role === 'superadmin' || currentAdmin.role === 'admin') {
+      fetchQuotes();
+    }
+    if (currentAdmin.role === 'superadmin') {
+      fetch('/api/admins', { cache: 'no-store' })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && Array.isArray(data.admins)) {
+            setAdminsCount(data.admins.length);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [currentAdmin]);
 
   const filteredBooks = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -462,14 +524,15 @@ export default function AdminDashboardPage() {
         body: JSON.stringify({ password: adminPassword }),
       });
 
-      if (res.ok) {
-        try {
-          sessionStorage.setItem('ngs_admin_auth', 'true');
-        } catch {}
-        setIsAuthorized(true);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.admin) {
+        const adminUser = data.admin as AdminSessionUser;
+        setCurrentAdmin(adminUser);
+        const tab = new URLSearchParams(window.location.search).get('tab');
+        setActiveMode(resolveAllowedTab(adminUser.role, tab));
         setAdminPassword('');
       } else {
-        setAuthError('Неверный пароль администратора');
+        setAuthError(data?.error || 'Неверный пароль администратора');
       }
     } catch {
       setAuthError('Ошибка сети при проверке пароля');
@@ -478,11 +541,15 @@ export default function AdminDashboardPage() {
     }
   };
 
-  const handleAdminLogout = () => {
+  const handleAdminLogout = async () => {
+    try {
+      await fetch('/api/admin-auth', { method: 'DELETE' });
+    } catch {}
     try {
       sessionStorage.removeItem('ngs_admin_auth');
     } catch {}
-    setIsAuthorized(false);
+    setCurrentAdmin(null);
+    setAdminsCount(null);
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -691,7 +758,18 @@ export default function AdminDashboardPage() {
     await fetchQuotes();
   };
 
-  // ЭКРАН БЛОКИРОВКИ АДМИНКИ (ПОСЛЕ ВСЕХ ХУКОВ)
+  // ЭКРАН ПРОВЕРКИ СЕССИИ И БЛОКИРОВКИ АДМИНКИ (ПОСЛЕ ВСЕХ ХУКОВ)
+  if (isBootingAuth) {
+    return (
+      <div className="min-h-screen bg-[#F8F9FE] dark:bg-[#111318] flex items-center justify-center p-4">
+        <div className="bg-white dark:bg-[#1C1F26] px-6 py-5 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-800 text-xs font-bold text-gray-500 flex items-center gap-2.5">
+          <RefreshCw className="w-4 h-4 animate-spin text-[#3F51B5]" />
+          <span>Проверка доступа...</span>
+        </div>
+      </div>
+    );
+  }
+
   if (!isAuthorized) {
     return (
       <div className="min-h-screen bg-[#F8F9FE] dark:bg-[#111318] flex items-center justify-center p-4">
@@ -701,7 +779,9 @@ export default function AdminDashboardPage() {
           </div>
           <div>
             <h1 className="text-xl font-extrabold text-gray-900 dark:text-white">Вход в админ-панель</h1>
-            <p className="text-xs text-gray-500 mt-1">Введите пароль администратора NGS Библиотеки</p>
+            <p className="text-xs text-gray-500 mt-1">
+              Введите пароль администратора или куратора NGS Библиотеки
+            </p>
           </div>
           <form onSubmit={handleAdminLogin} className="space-y-4 text-left">
             <input
@@ -738,55 +818,70 @@ export default function AdminDashboardPage() {
         {/* Шапка админки */}
         <header className="bg-white dark:bg-[#1C1F26] p-6 rounded-[28px] shadow-sm border border-gray-200/80 dark:border-gray-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2">
-              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-300">
-                ADMIN PANEL
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                  currentAdmin?.role === 'supervisor'
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                    : 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-300'
+                }`}
+              >
+                {currentAdmin ? ADMIN_ROLE_LABELS[currentAdmin.role].shortLabel : 'ADMIN PANEL'}
               </span>
               <h1 className="text-xl sm:text-2xl font-extrabold text-gray-900 dark:text-white">
-                Управление NGS Библиотекой
+                {canManageLibrary ? 'Управление NGS Библиотекой' : 'Контроль чтения учеников'}
               </h1>
             </div>
             <p className="text-xs text-gray-500 mt-1">
-              Книг: {booksList.length} • Цитат: {quotesList.length} • Учеников: {studentsList.length}
+              Вы вошли как: <b className="text-gray-700 dark:text-gray-200">{currentAdmin?.name}</b>
+              {currentAdmin?.note && currentAdmin.role !== 'superadmin' ? ` (${currentAdmin.note})` : ''}
+              {' • '}
+              {canManageLibrary
+                ? `Книг: ${booksList.length} • Цитат: ${quotesList.length} • Учеников: ${studentsList.length}`
+                : `Учеников: ${studentsList.length}`}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => setActiveMode('manage')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-                activeMode === 'manage'
-                  ? 'bg-[#3F51B5] text-white shadow-md'
-                  : 'bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-gray-300 hover:bg-gray-200'
-              }`}
-            >
-              <BookOpen className="w-4 h-4" />
-              Фонд ({booksList.length})
-            </button>
+            {canManageLibrary && (
+              <>
+                <button
+                  onClick={() => setActiveMode('manage')}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    activeMode === 'manage'
+                      ? 'bg-[#3F51B5] text-white shadow-md'
+                      : 'bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-gray-300 hover:bg-gray-200'
+                  }`}
+                >
+                  <BookOpen className="w-4 h-4" />
+                  Фонд ({booksList.length})
+                </button>
 
-            <button
-              onClick={() => setActiveMode('add')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-                activeMode === 'add'
-                  ? 'bg-[#3F51B5] text-white shadow-md'
-                  : 'bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-gray-300 hover:bg-gray-200'
-              }`}
-            >
-              <Plus className="w-4 h-4" />
-              Загрузить
-            </button>
+                <button
+                  onClick={() => setActiveMode('add')}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    activeMode === 'add'
+                      ? 'bg-[#3F51B5] text-white shadow-md'
+                      : 'bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-gray-300 hover:bg-gray-200'
+                  }`}
+                >
+                  <Plus className="w-4 h-4" />
+                  Загрузить
+                </button>
 
-            <button
-              onClick={() => setActiveMode('quotes')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-                activeMode === 'quotes'
-                  ? 'bg-[#3F51B5] text-white shadow-md'
-                  : 'bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-gray-300 hover:bg-gray-200'
-              }`}
-            >
-              <Quote className="w-4 h-4" />
-              Цитаты
-            </button>
+                <button
+                  onClick={() => setActiveMode('quotes')}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    activeMode === 'quotes'
+                      ? 'bg-[#3F51B5] text-white shadow-md'
+                      : 'bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-gray-300 hover:bg-gray-200'
+                  }`}
+                >
+                  <Quote className="w-4 h-4" />
+                  Цитаты
+                </button>
+              </>
+            )}
 
             <button
               onClick={() => { setActiveMode('students'); fetchActivity(); }}
@@ -799,6 +894,20 @@ export default function AdminDashboardPage() {
               <Users className="w-4 h-4" />
               Ученики ({studentsList.length})
             </button>
+
+            {isSuperadmin && (
+              <button
+                onClick={() => setActiveMode('admins')}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  activeMode === 'admins'
+                    ? 'bg-[#3F51B5] text-white shadow-md'
+                    : 'bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-gray-300 hover:bg-gray-200'
+                }`}
+              >
+                <Shield className="w-4 h-4" />
+                Админы{adminsCount !== null ? ` (${adminsCount})` : ''}
+              </button>
+            )}
 
             <a
               href="/"
@@ -818,7 +927,7 @@ export default function AdminDashboardPage() {
         </header>
 
         {/* ВКЛАДКА 1: УПРАВЛЕНИЕ КНИГАМИ */}
-        {activeMode === 'manage' && (
+        {canManageLibrary && activeMode === 'manage' && (
           <div className="bg-white dark:bg-[#1C1F26] p-6 rounded-[28px] shadow-sm border border-gray-200/80 dark:border-gray-800 space-y-4">
             <div className="relative">
               <Search className="w-4 h-4 absolute left-4 top-3.5 text-gray-400" />
@@ -976,7 +1085,7 @@ export default function AdminDashboardPage() {
         )}
 
         {/* ВКЛАДКА 2: ДОБАВЛЕНИЕ КНИГИ */}
-        {activeMode === 'add' && (
+        {canManageLibrary && activeMode === 'add' && (
           <div className="bg-white dark:bg-[#1C1F26] p-8 rounded-[28px] shadow-sm border border-gray-200/80 dark:border-gray-800">
             <form onSubmit={handleAddSubmit} className="space-y-5">
               <div className="border-2 border-dashed border-indigo-200 dark:border-indigo-900/50 rounded-2xl p-6 text-center bg-indigo-50/30 dark:bg-indigo-950/10">
@@ -1127,7 +1236,7 @@ export default function AdminDashboardPage() {
         )}
 
         {/* ВКЛАДКА 3: ЦИТАТЫ ДНЯ */}
-        {activeMode === 'quotes' && (
+        {canManageLibrary && activeMode === 'quotes' && (
           <div className="bg-white dark:bg-[#1C1F26] p-6 sm:p-8 rounded-[28px] shadow-sm border border-gray-200/80 dark:border-gray-800 space-y-6">
             <form onSubmit={handleAddQuote} className="p-5 rounded-2xl bg-amber-50/60 dark:bg-amber-950/10 border border-amber-200/70 dark:border-amber-900/30 space-y-4">
               <h3 className="font-bold text-sm text-amber-900 dark:text-amber-300">Добавить новую цитату</h3>
@@ -1619,6 +1728,11 @@ export default function AdminDashboardPage() {
                               >
                                 <div className="space-y-0.5 min-w-0">
                                   <div className="flex flex-wrap items-center gap-1.5">
+                                    {m.sender_name && (
+                                      <span className="px-1.5 py-0.5 rounded bg-white dark:bg-white/10 text-gray-700 dark:text-gray-200 text-[10px] font-bold">
+                                        {m.sender_name}
+                                      </span>
+                                    )}
                                     {m.book_title && (
                                       <span className="px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/50 text-indigo-800 dark:text-indigo-200 text-[10px] font-bold">
                                         📖 {m.book_title}
@@ -1665,6 +1779,11 @@ export default function AdminDashboardPage() {
               </div>
             )}
           </div>
+        )}
+
+        {/* ВКЛАДКА 5: УПРАВЛЕНИЕ АДМИНИСТРАТОРАМИ (ТОЛЬКО ГЛАВНЫЙ АДМИН) */}
+        {isSuperadmin && activeMode === 'admins' && (
+          <AdminsManagerTab onAdminsCountChange={setAdminsCount} />
         )}
 
       </div>

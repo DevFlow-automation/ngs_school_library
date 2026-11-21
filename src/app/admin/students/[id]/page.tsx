@@ -22,6 +22,11 @@ import {
 } from '@/lib/gamification';
 import { AVATAR_RARITY_META, getAvatarsForAgeGroup } from '@/lib/avatars';
 import {
+  ADMIN_ROLE_LABELS,
+  formatAdminSenderName,
+  type AdminSessionUser,
+} from '@/lib/adminTypes';
+import {
   ArrowLeft,
   BookOpen,
   Clock,
@@ -96,10 +101,13 @@ export default function AdminStudentProfilePage() {
   const studentId = Array.isArray(params?.id) ? params.id[0] : String(params?.id || '');
 
   // Авторизация админа (общая с /admin/load)
-  const [isAuthorized, setIsAuthorized] = useState(false);
+  const [currentAdmin, setCurrentAdmin] = useState<AdminSessionUser | null>(null);
+  const [isBootingAuth, setIsBootingAuth] = useState(true);
   const [adminPassword, setAdminPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [isCheckingAuth, setIsCheckingAuth] = useState(false);
+
+  const isAuthorized = Boolean(currentAdmin);
 
   const [student, setStudent] = useState<StudentDetail | null>(null);
   const [booksMap, setBooksMap] = useState<Record<string, BookInfo>>({});
@@ -163,13 +171,35 @@ export default function AdminStudentProfilePage() {
   }, [studentId]);
 
   useEffect(() => {
-    try {
-      if (sessionStorage.getItem('ngs_admin_auth') === 'true') {
-        setIsAuthorized(true);
+    let cancelled = false;
+    const checkSession = async () => {
+      try {
+        const res = await fetch('/api/admin-auth', { cache: 'no-store' });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled && res.ok && data?.authenticated && data?.admin) {
+          setCurrentAdmin(data.admin as AdminSessionUser);
+        } else if (!cancelled) {
+          try {
+            sessionStorage.removeItem('ngs_admin_auth');
+          } catch {}
+        }
+      } catch {
+        // Оставляем форму входа
+      } finally {
+        if (!cancelled) setIsBootingAuth(false);
       }
-    } catch {}
-    loadStudentData();
-  }, [loadStudentData]);
+    };
+    checkSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isAuthorized) {
+      loadStudentData();
+    }
+  }, [isAuthorized, loadStudentData]);
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -181,14 +211,12 @@ export default function AdminStudentProfilePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: adminPassword }),
       });
-      if (res.ok) {
-        try {
-          sessionStorage.setItem('ngs_admin_auth', 'true');
-        } catch {}
-        setIsAuthorized(true);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.admin) {
+        setCurrentAdmin(data.admin as AdminSessionUser);
         setAdminPassword('');
       } else {
-        setAuthError('Неверный пароль администратора');
+        setAuthError(data?.error || 'Неверный пароль администратора');
       }
     } catch {
       setAuthError('Ошибка сети при проверке пароля');
@@ -208,7 +236,7 @@ export default function AdminStudentProfilePage() {
           student_id: student.id,
           book_id: selectedBookForMsg.id,
           book_title: selectedBookForMsg.title,
-          sender_name: 'Администратор библиотеки',
+          sender_name: formatAdminSenderName(currentAdmin),
           message: messageDraft.trim(),
           is_read: false,
         },
@@ -296,6 +324,17 @@ export default function AdminStudentProfilePage() {
     [progressRows]
   );
 
+  if (isBootingAuth) {
+    return (
+      <div className="min-h-screen bg-[#F8F9FE] dark:bg-[#111318] flex items-center justify-center p-4">
+        <div className="bg-white dark:bg-[#1C1F26] px-6 py-5 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-800 text-xs font-bold text-gray-500 flex items-center gap-2.5">
+          <RefreshCw className="w-4 h-4 animate-spin text-[#3F51B5]" />
+          <span>Проверка доступа...</span>
+        </div>
+      </div>
+    );
+  }
+
   if (!isAuthorized) {
     return (
       <div className="min-h-screen bg-[#F8F9FE] dark:bg-[#111318] flex items-center justify-center p-4">
@@ -308,7 +347,7 @@ export default function AdminStudentProfilePage() {
               Вход в админ-панель
             </h1>
             <p className="text-xs text-gray-500 mt-1">
-              Введите пароль администратора для просмотра профиля ученика
+              Введите пароль администратора или куратора для просмотра профиля ученика
             </p>
           </div>
           <form onSubmit={handleAdminLogin} className="space-y-4 text-left">
@@ -396,7 +435,9 @@ export default function AdminStudentProfilePage() {
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="px-2 py-0.5 rounded-full bg-white/15 text-indigo-100 text-[10px] font-bold uppercase">
-                        Просмотр админа
+                        {currentAdmin
+                          ? `${ADMIN_ROLE_LABELS[currentAdmin.role].shortLabel}: ${currentAdmin.name}`
+                          : 'Просмотр админа'}
                       </span>
                       <span className="px-2 py-0.5 rounded-full bg-white/15 text-white text-[10.5px] font-bold">
                         {student.grade_class} кл
@@ -899,6 +940,11 @@ export default function AdminStudentProfilePage() {
                       >
                         <div className="space-y-1 min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5">
+                            {m.sender_name && (
+                              <span className="px-2 py-0.5 rounded bg-white dark:bg-white/10 text-gray-700 dark:text-gray-200 text-[10px] font-bold">
+                                {m.sender_name}
+                              </span>
+                            )}
                             {m.book_title && (
                               <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[10px] font-bold">
                                 📖 {m.book_title}
