@@ -25,6 +25,7 @@ import {
   formatReadingDuration,
   formatTurnSpeed
 } from '@/lib/readingMetrics';
+import { isAutoWarningMessage } from '@/lib/autoWarnings';
 import {
   calculateStudentPoints,
   getAgeGroup,
@@ -1721,16 +1722,33 @@ export default function AdminDashboardPage() {
                             <span>Отправленные сообщения ({messagesByStudent[st.id].length}):</span>
                           </div>
                           <div className="space-y-1.5">
-                            {messagesByStudent[st.id].map((m) => (
+                            {messagesByStudent[st.id].map((m) => {
+                              const isAuto = isAutoWarningMessage(m.sender_name);
+                              return (
                               <div
                                 key={m.id}
-                                className="p-2.5 rounded-xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/40 flex items-start justify-between gap-2 text-xs"
+                                className={`p-2.5 rounded-xl border flex items-start justify-between gap-2 text-xs ${
+                                  isAuto
+                                    ? 'bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900/50'
+                                    : 'bg-indigo-50/50 dark:bg-indigo-950/20 border-indigo-100 dark:border-indigo-900/40'
+                                }`}
                               >
                                 <div className="space-y-0.5 min-w-0">
                                   <div className="flex flex-wrap items-center gap-1.5">
                                     {m.sender_name && (
-                                      <span className="px-1.5 py-0.5 rounded bg-white dark:bg-white/10 text-gray-700 dark:text-gray-200 text-[10px] font-bold">
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                          isAuto
+                                            ? 'bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200'
+                                            : 'bg-white dark:bg-white/10 text-gray-700 dark:text-gray-200'
+                                        }`}
+                                      >
                                         {m.sender_name}
+                                      </span>
+                                    )}
+                                    {isAuto && (
+                                      <span className="px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200 text-[9.5px] font-extrabold uppercase">
+                                        Авто
                                       </span>
                                     )}
                                     {m.book_title && (
@@ -1769,7 +1787,8 @@ export default function AdminDashboardPage() {
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       )}

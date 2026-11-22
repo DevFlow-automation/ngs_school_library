@@ -31,6 +31,14 @@ export function getFastTurnThresholdSeconds(pageCharCount: number): number {
   return Math.min(10, Math.max(2, Math.round(pageCharCount / 120)));
 }
 
+/**
+ * Порог "слишком быстрого" перелистывания главы в секундах.
+ * Для обычной главы составляет до 15 сек, для короткой — снижается пропорционально (минимум 4 сек).
+ */
+export function getFastChapterThresholdSeconds(chapterCharCount: number): number {
+  return Math.min(15, Math.max(4, Math.round(chapterCharCount / 120)));
+}
+
 /** Формат таймера в шапке читалки: MM:SS или H:MM:SS */
 export function formatReadingTimer(totalSeconds: number): string {
   const safe = Math.max(0, Math.floor(totalSeconds || 0));

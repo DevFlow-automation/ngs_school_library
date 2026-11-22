@@ -11,9 +11,15 @@ import {
 import { Book, ReaderTheme } from '@/types/book';
 import {
   evaluateBookCompletion,
+  evaluateReadingPace,
   formatReadingTimer,
+  getFastChapterThresholdSeconds,
   getFastTurnThresholdSeconds,
 } from '@/lib/readingMetrics';
+import {
+  sendAutoReadingWarning,
+  type AutoWarningParams,
+} from '@/lib/autoWarnings';
 import {
   calculateStudentPoints,
   getAgeGroup,
@@ -22,6 +28,13 @@ import {
 
 const TARGET_CHARS_PER_PAGE = 1100;
 const AUTO_FLUSH_MS = 15000;
+
+interface LivePaceWarning {
+  severity: 'warning' | 'danger';
+  title: string;
+  message: string;
+  sentToProfile?: boolean;
+}
 
 export const ReaderModal: React.FC = () => {
   const { 
@@ -33,6 +46,7 @@ export const ReaderModal: React.FC = () => {
     readingProgress,
     saveProgress,
     recordReadingMetrics,
+    fetchUnreadMessagesCount,
     readerFontSize,
     readerFontFamily,
     readerTheme,
@@ -54,12 +68,39 @@ export const ReaderModal: React.FC = () => {
   const [bookLoadError, setBookLoadError] = useState(false);
   const [readyBookId, setReadyBookId] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [liveWarning, setLiveWarning] = useState<LivePaceWarning | null>(null);
   const textScrollRef = useRef<HTMLDivElement>(null);
 
-  // Рефы для точного подсчёта активного времени чтения и скорости перелистывания
+  // Рефы для точного подсчёта активного времени чтения, скорости перелистывания и авто-предупреждений
   const unsavedReadingMsRef = useRef(0);
   const pageActiveMsRef = useRef(0);
+  const chapterActiveMsRef = useRef(0);
   const activeSinceRef = useRef<number | null>(null);
+  const fastPageStreakRef = useRef(0);
+  const fastChapterStreakRef = useRef(0);
+  const chapterSkipCountRef = useRef(0);
+  const maxVisitedChapterRef = useRef(0);
+  const warningHideTimerRef = useRef<number | null>(null);
+
+  const dismissLiveWarning = useCallback(() => {
+    if (warningHideTimerRef.current !== null) {
+      window.clearTimeout(warningHideTimerRef.current);
+      warningHideTimerRef.current = null;
+    }
+    setLiveWarning(null);
+  }, []);
+
+  const showLiveWarning = useCallback((warning: LivePaceWarning, autoHideMs = 10000) => {
+    if (warningHideTimerRef.current !== null) {
+      window.clearTimeout(warningHideTimerRef.current);
+      warningHideTimerRef.current = null;
+    }
+    setLiveWarning(warning);
+    warningHideTimerRef.current = window.setTimeout(() => {
+      setLiveWarning(null);
+      warningHideTimerRef.current = null;
+    }, autoHideMs);
+  }, []);
 
   const captureActiveSlice = useCallback((keepRunning: boolean) => {
     const now = performance.now();
@@ -67,6 +108,7 @@ export const ReaderModal: React.FC = () => {
       const elapsed = Math.max(0, now - activeSinceRef.current);
       unsavedReadingMsRef.current += elapsed;
       pageActiveMsRef.current += elapsed;
+      chapterActiveMsRef.current += elapsed;
     }
     activeSinceRef.current = keepRunning ? now : null;
   }, []);
@@ -202,12 +244,19 @@ export const ReaderModal: React.FC = () => {
 
   useEffect(() => {
     if (activeBookId && isBookReady && readyBookId !== activeBookId) {
-      const savedPage = readingProgress[activeBookId]?.pageIndex || 0;
+      const savedProgress = readingProgress[activeBookId];
+      const savedPage = savedProgress?.pageIndex || 0;
       setCurrentPage(savedPage < totalPages ? savedPage : 0);
       setShowMobileToc(false);
+      fastPageStreakRef.current = 0;
+      fastChapterStreakRef.current = 0;
+      chapterSkipCountRef.current = 0;
+      chapterActiveMsRef.current = 0;
+      maxVisitedChapterRef.current = Math.max(savedProgress?.chapterIndex || 0, activeChapterIndex);
+      dismissLiveWarning();
       setReadyBookId(activeBookId);
     }
-  }, [activeBookId, isBookReady, totalPages, readyBookId]);
+  }, [activeBookId, isBookReady, totalPages, readyBookId, activeChapterIndex, dismissLiveWarning]);
 
   useEffect(() => {
     if (textScrollRef.current) {
@@ -227,6 +276,7 @@ export const ReaderModal: React.FC = () => {
 
     unsavedReadingMsRef.current = 0;
     pageActiveMsRef.current = 0;
+    chapterActiveMsRef.current = 0;
     setLiveExtraSec(0);
 
     const isWindowActive = () =>
@@ -285,8 +335,58 @@ export const ReaderModal: React.FC = () => {
       window.removeEventListener('pagehide', handlePageHide);
       flushReadingMetrics(activeBookId);
       activeSinceRef.current = null;
+      dismissLiveWarning();
     };
-  }, [activeBookId, readyBookId, captureActiveSlice, flushReadingMetrics]);
+  }, [activeBookId, readyBookId, captureActiveSlice, flushReadingMetrics, dismissLiveWarning]);
+
+  // Авто-предупреждение в профиль, если ученик дошёл до конца книги, но она не засчитана из-за темпа/перескока
+  useEffect(() => {
+    if (!student?.id || !book || !isBookReady || readyBookId !== book.id) return;
+    const isLastPage = currentPage === totalPages - 1;
+    const hasNextCh = activeChapterIndex < totalChapters - 1;
+    if (!isLastPage || hasNextCh) return;
+
+    const prog = readingProgress[book.id];
+    if (!prog) return;
+
+    const check = evaluateBookCompletion({
+      progressPercent: 100,
+      readingSeconds: prog.readingSeconds || 0,
+      pagesTurned: prog.pagesTurned || 0,
+      fastTurnsCount: prog.fastTurnsCount || 0,
+      avgSecondsPerPage: prog.avgSecondsPerPage || 0,
+      minSecondsPerPage: prog.minSecondsPerPage ?? null,
+    });
+
+    if (!check.counted) {
+      void sendAutoReadingWarning({
+        studentId: student.id,
+        bookId: book.id,
+        bookTitle: book.title,
+        reason: 'unverified_completion',
+        readingSeconds: prog.readingSeconds || 0,
+        pagesTurned: prog.pagesTurned || 0,
+        fastTurnsCount: prog.fastTurnsCount || 0,
+        avgSecondsPerPage: prog.avgSecondsPerPage || 0,
+        completionReason: check.reason,
+      }).then((sent) => {
+        if (sent) {
+          void fetchUnreadMessagesCount();
+        }
+      });
+    }
+  }, [
+    student?.id,
+    book,
+    isBookReady,
+    readyBookId,
+    currentPage,
+    totalPages,
+    activeChapterIndex,
+    totalChapters,
+    readingProgress,
+    fetchUnreadMessagesCount,
+  ]);
 
   if (!activeBookId) return null;
 
@@ -415,14 +515,171 @@ export const ReaderModal: React.FC = () => {
     return { elapsedSec, isFastTurn: elapsedSec < fastThresholdSec };
   };
 
+  const dispatchProfileAutoWarning = (
+    params: Omit<AutoWarningParams, 'studentId' | 'bookId' | 'bookTitle'>
+  ) => {
+    if (!student?.id) return;
+    void sendAutoReadingWarning({
+      ...params,
+      studentId: student.id,
+      bookId: book.id,
+      bookTitle: book.title,
+    }).then((sent) => {
+      if (sent) {
+        void fetchUnreadMessagesCount();
+        setLiveWarning((prev) => (prev ? { ...prev, sentToProfile: true } : prev));
+      }
+    });
+  };
+
+  const evaluateFastPageWarning = (isFastTurn: boolean) => {
+    const latest = useReadingStore.getState().readingProgress[book.id];
+    const turns = latest?.pagesTurned || 0;
+    const fastTurns = latest?.fastTurnsCount || 0;
+    const avgSec = latest?.avgSecondsPerPage || 0;
+    const readingSec = latest?.readingSeconds || 0;
+
+    if (!isFastTurn) {
+      fastPageStreakRef.current = 0;
+      if (liveWarning?.severity === 'warning') {
+        dismissLiveWarning();
+      }
+      return;
+    }
+
+    fastPageStreakRef.current += 1;
+    const pace = evaluateReadingPace({
+      progressPercent: latest?.percent || 0,
+      readingSeconds: readingSec,
+      pagesTurned: turns,
+      fastTurnsCount: fastTurns,
+      avgSecondsPerPage: avgSec,
+      minSecondsPerPage: latest?.minSecondsPerPage ?? null,
+    });
+
+    if (fastPageStreakRef.current >= 3 || pace.status === 'suspicious') {
+      const detail =
+        fastPageStreakRef.current >= 3
+          ? `Ты пролистал(а) ${fastPageStreakRef.current} стр. подряд быстрее нормы.`
+          : `Зафиксирована слишком высокая скорость перелистывания (${pace.reason}).`;
+
+      showLiveWarning(
+        {
+          severity: 'danger',
+          title: 'Слишком быстрое перелистывание страниц',
+          message: `${detail} Читай внимательнее — такие страницы не приносят баллы, и книга может не засчитаться.`,
+        },
+        12000
+      );
+
+      dispatchProfileAutoWarning({
+        reason: 'fast_pages',
+        fastStreak: fastPageStreakRef.current,
+        pagesTurned: turns,
+        fastTurnsCount: fastTurns,
+        avgSecondsPerPage: avgSec,
+        readingSeconds: readingSec,
+      });
+    } else if (fastPageStreakRef.current === 2) {
+      showLiveWarning(
+        {
+          severity: 'warning',
+          title: 'Сбавь темп чтения',
+          message:
+            'Ты перелистываешь страницы быстрее нормы. Пожалуйста, читай внимательно — быстрые клики не засчитываются в баллы.',
+        },
+        8000
+      );
+    }
+  };
+
   const handleCloseReader = () => {
+    dismissLiveWarning();
     flushReadingMetrics(book.id);
     closeReader();
   };
 
   const handleSelectChapter = (idx: number) => {
+    if (idx === activeChapterIndex) {
+      setShowMobileToc(false);
+      return;
+    }
+
     flushReadingMetrics(book.id, { skipSync: true });
+    const chapterElapsedSec = Math.max(0.1, Math.round((chapterActiveMsRef.current / 1000) * 10) / 10);
+    const chapterChars = (currentChapter.paragraphs || []).join(' ').length;
+    const fastChapterThreshold = getFastChapterThresholdSeconds(chapterChars);
     pageActiveMsRef.current = 0;
+    chapterActiveMsRef.current = 0;
+
+    if (idx > activeChapterIndex) {
+      const baselineChapter = Math.max(activeChapterIndex, maxVisitedChapterRef.current);
+      const jumpSize = idx - baselineChapter;
+
+      if (jumpSize >= 2) {
+        chapterSkipCountRef.current += 1;
+        const latest = useReadingStore.getState().readingProgress[book.id];
+        const readingSec = latest?.readingSeconds || 0;
+        const approxPercent = Math.round(((idx + 1) / Math.max(totalChapters, 1)) * 100);
+        const shouldSendMessage =
+          jumpSize >= 3 ||
+          chapterSkipCountRef.current >= 2 ||
+          (approxPercent >= 25 && readingSec < 60);
+
+        showLiveWarning(
+          {
+            severity: shouldSendMessage ? 'danger' : 'warning',
+            title: 'Замечен перескок по главам',
+            message: `Ты перешёл(ла) с главы ${activeChapterIndex + 1} сразу на главу ${idx + 1}. Пропущенные главы не засчитываются — читай книгу по порядку.`,
+          },
+          shouldSendMessage ? 12000 : 9000
+        );
+
+        if (shouldSendMessage) {
+          dispatchProfileAutoWarning({
+            reason: 'chapter_skip',
+            fromChapter: activeChapterIndex + 1,
+            toChapter: idx + 1,
+            readingSeconds: readingSec,
+          });
+        }
+      } else if (idx === activeChapterIndex + 1) {
+        maxVisitedChapterRef.current = Math.max(maxVisitedChapterRef.current, idx);
+        if (chapterElapsedSec < fastChapterThreshold) {
+          fastChapterStreakRef.current += 1;
+          if (fastChapterStreakRef.current >= 3) {
+            showLiveWarning(
+              {
+                severity: 'danger',
+                title: 'Слишком быстрое перелистывание глав',
+                message: `Ты переключил(а) ${fastChapterStreakRef.current} главы подряд за слишком короткое время. Читай главы целиком, чтобы чтение засчиталось.`,
+              },
+              12000
+            );
+            dispatchProfileAutoWarning({
+              reason: 'fast_chapters',
+              fastStreak: fastChapterStreakRef.current,
+              readingSeconds: useReadingStore.getState().readingProgress[book.id]?.readingSeconds || 0,
+            });
+          } else if (fastChapterStreakRef.current === 2) {
+            showLiveWarning(
+              {
+                severity: 'warning',
+                title: 'Слишком быстрый переход между главами',
+                message:
+                  'Ты переключаешь главы слишком быстро. Прочитай текущую главу внимательно перед переходом дальше.',
+              },
+              8000
+            );
+          }
+        } else {
+          fastChapterStreakRef.current = 0;
+        }
+      }
+    } else {
+      fastChapterStreakRef.current = 0;
+    }
+
     setChapterIndex(idx);
     setCurrentPage(0);
     setShowMobileToc(false);
@@ -441,16 +698,70 @@ export const ReaderModal: React.FC = () => {
       isFastTurn,
       skipSync: true,
     });
+    evaluateFastPageWarning(isFastTurn);
     setCurrentPage((prev) => Math.min(totalPages - 1, prev + 1));
   };
 
   const handleNextChapter = () => {
     const { elapsedSec, isFastTurn } = measureCurrentPageTurn();
+    const chapterElapsedSec = Math.max(0.1, Math.round((chapterActiveMsRef.current / 1000) * 10) / 10);
+    const chapterChars = (currentChapter.paragraphs || []).join(' ').length;
+    const fastChapterThreshold = getFastChapterThresholdSeconds(chapterChars);
+    const isFastChapter = chapterElapsedSec < fastChapterThreshold;
+    chapterActiveMsRef.current = 0;
+
     flushReadingMetrics(book.id, {
       pageTurnElapsedSec: elapsedSec,
       isFastTurn,
       skipSync: true,
     });
+
+    maxVisitedChapterRef.current = Math.max(maxVisitedChapterRef.current, activeChapterIndex + 1);
+
+    if (isFastChapter) {
+      fastChapterStreakRef.current += 1;
+    } else {
+      fastChapterStreakRef.current = 0;
+    }
+
+    if (fastChapterStreakRef.current >= 3) {
+      if (isFastTurn) {
+        fastPageStreakRef.current += 1;
+      } else {
+        fastPageStreakRef.current = 0;
+      }
+      showLiveWarning(
+        {
+          severity: 'danger',
+          title: 'Слишком быстрое перелистывание глав',
+          message: `Ты пролистал(а) ${fastChapterStreakRef.current} главы подряд слишком быстро. Пожалуйста, читай главы целиком и в спокойном темпе.`,
+        },
+        12000
+      );
+      dispatchProfileAutoWarning({
+        reason: 'fast_chapters',
+        fastStreak: fastChapterStreakRef.current,
+        readingSeconds: useReadingStore.getState().readingProgress[book.id]?.readingSeconds || 0,
+      });
+    } else if (fastChapterStreakRef.current === 2) {
+      if (isFastTurn) {
+        fastPageStreakRef.current += 1;
+      } else {
+        fastPageStreakRef.current = 0;
+      }
+      showLiveWarning(
+        {
+          severity: 'warning',
+          title: 'Слишком быстрый переход между главами',
+          message:
+            'Ты переходишь к следующим главам слишком быстро. Постарайся внимательно дочитывать каждую главу.',
+        },
+        8000
+      );
+    } else {
+      evaluateFastPageWarning(isFastTurn);
+    }
+
     setChapterIndex(activeChapterIndex + 1);
     setCurrentPage(0);
     setShowMobileToc(false);
@@ -586,6 +897,44 @@ export const ReaderModal: React.FC = () => {
               Стр. {currentPage + 1}/{totalPages}
             </span>
           </div>
+
+          {liveWarning && (
+            <div
+              role="alert"
+              className={`mb-3 p-3 rounded-2xl border text-xs flex items-start justify-between gap-2.5 select-none transition-all ${
+                liveWarning.severity === 'danger'
+                  ? 'bg-red-50 dark:bg-red-950/55 border-red-300 dark:border-red-800/70 text-red-900 dark:text-red-100'
+                  : 'bg-amber-50 dark:bg-amber-950/50 border-amber-300 dark:border-amber-800/70 text-amber-950 dark:text-amber-100'
+              }`}
+            >
+              <div className="flex items-start gap-2.5 min-w-0">
+                <AlertTriangle
+                  className={`w-4 h-4 shrink-0 mt-0.5 ${
+                    liveWarning.severity === 'danger'
+                      ? 'text-red-600 dark:text-red-400'
+                      : 'text-amber-600 dark:text-amber-400'
+                  }`}
+                />
+                <div className="space-y-0.5 min-w-0">
+                  <div className="font-extrabold leading-snug">{liveWarning.title}</div>
+                  <div className="text-[11.5px] opacity-90 leading-snug">{liveWarning.message}</div>
+                  {liveWarning.sentToProfile && (
+                    <div className="text-[10.5px] font-semibold opacity-75 pt-0.5">
+                      Предупреждение также сохранено в разделе «Сообщения» вашего профиля.
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={dismissLiveWarning}
+                className="p-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 shrink-0"
+                title="Скрыть предупреждение"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
           <div ref={textScrollRef} className="flex-1 overflow-y-auto pr-1 sm:pr-2 py-1">
             <article 

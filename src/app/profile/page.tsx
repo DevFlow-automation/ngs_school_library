@@ -11,6 +11,7 @@ import { BOOKS } from '@/data/books';
 import { Book } from '@/types/book';
 import { fetchBooksMetadata, getCachedBooks } from '@/lib/booksService';
 import { evaluateBookCompletion, formatReadingDuration } from '@/lib/readingMetrics';
+import { isAutoWarningMessage } from '@/lib/autoWarnings';
 import {
   calculateStudentPoints,
   getAgeGroup,
@@ -480,7 +481,7 @@ export default function StudentProfilePage() {
               >
                 <div className="flex items-center gap-2 text-xs font-bold text-amber-950 dark:text-amber-200">
                   <Mail className="w-4 h-4 text-red-600 shrink-0" />
-                  <span>У вас есть новые сообщения от администратора ({unreadCount})</span>
+                  <span>У вас есть новые сообщения и предупреждения ({unreadCount})</span>
                 </div>
                 <span className="text-xs font-extrabold text-[#3F51B5] dark:text-[#A5B4FC] shrink-0">
                   Открыть →
@@ -1036,7 +1037,7 @@ export default function StudentProfilePage() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-sm font-extrabold text-[#191C20] dark:text-white">
                     <Sparkles className="w-4 h-4 text-[#3F51B5]" />
-                    <span>Сообщения от администратора</span>
+                    <span>Сообщения и предупреждения</span>
                   </div>
                   {unreadCount > 0 && (
                     <button
@@ -1054,24 +1055,36 @@ export default function StudentProfilePage() {
                   <div className="py-6 text-center text-xs text-gray-400">Загрузка...</div>
                 ) : messages.length === 0 ? (
                   <div className="p-6 rounded-2xl bg-[#F8F9FE] dark:bg-[#151820] border border-dashed border-[#E0E2EC] dark:border-[#2F323D] text-center text-xs text-[#74777F] dark:text-[#90939C]">
-                    Сообщений от администратора пока нет. Приятного чтения!
+                    Сообщений и предупреждений пока нет. Приятного чтения!
                   </div>
                 ) : (
                   <div className="space-y-2.5">
-                    {messages.map((msg) => (
+                    {messages.map((msg) => {
+                      const isAuto = isAutoWarningMessage(msg.sender_name);
+                      return (
                       <div
                         key={msg.id}
                         className={`p-3.5 rounded-2xl border space-y-1.5 ${
                           !msg.is_read
-                            ? 'bg-amber-50/70 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800/70'
+                            ? isAuto
+                              ? 'bg-red-50/60 dark:bg-red-950/20 border-red-300 dark:border-red-800/70'
+                              : 'bg-amber-50/70 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800/70'
                             : 'bg-[#F8F9FE]/70 dark:bg-[#16181F] border-[#E0E2EC]/70 dark:border-[#2F323D]'
                         }`}
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-xs font-extrabold text-[#191C20] dark:text-white">
-                              {msg.sender_name || 'Администратор библиотеки'}
+                            <span className="text-xs font-extrabold text-[#191C20] dark:text-white inline-flex items-center gap-1">
+                              {isAuto && (
+                                <AlertTriangle className="w-3.5 h-3.5 text-red-600 dark:text-red-400 shrink-0" />
+                              )}
+                              <span>{msg.sender_name || 'Администратор библиотеки'}</span>
                             </span>
+                            {isAuto && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200 text-[9.5px] font-extrabold">
+                                Авто-предупреждение
+                              </span>
+                            )}
                             {!msg.is_read && (
                               <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[9.5px] font-bold">
                                 Новое
@@ -1105,7 +1118,8 @@ export default function StudentProfilePage() {
                           </div>
                         )}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </section>

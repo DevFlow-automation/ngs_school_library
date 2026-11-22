@@ -13,6 +13,7 @@ import {
   formatReadingDuration,
   formatTurnSpeed,
 } from '@/lib/readingMetrics';
+import { isAutoWarningMessage } from '@/lib/autoWarnings';
 import {
   calculateStudentPoints,
   getAgeGroup,
@@ -933,16 +934,33 @@ export default function AdminStudentProfilePage() {
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {messages.map((m) => (
+                    {messages.map((m) => {
+                      const isAuto = isAutoWarningMessage(m.sender_name);
+                      return (
                       <div
                         key={m.id}
-                        className="p-3 rounded-2xl border border-gray-100 dark:border-gray-800 bg-[#F8F9FE]/60 dark:bg-[#16181F] flex items-start justify-between gap-2 text-xs"
+                        className={`p-3 rounded-2xl border flex items-start justify-between gap-2 text-xs ${
+                          isAuto
+                            ? 'border-amber-200 dark:border-amber-900/60 bg-amber-50/40 dark:bg-amber-950/15'
+                            : 'border-gray-100 dark:border-gray-800 bg-[#F8F9FE]/60 dark:bg-[#16181F]'
+                        }`}
                       >
                         <div className="space-y-1 min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5">
                             {m.sender_name && (
-                              <span className="px-2 py-0.5 rounded bg-white dark:bg-white/10 text-gray-700 dark:text-gray-200 text-[10px] font-bold">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  isAuto
+                                    ? 'bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200'
+                                    : 'bg-white dark:bg-white/10 text-gray-700 dark:text-gray-200'
+                                }`}
+                              >
                                 {m.sender_name}
+                              </span>
+                            )}
+                            {isAuto && (
+                              <span className="px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200 text-[9.5px] font-extrabold uppercase">
+                                Авто
                               </span>
                             )}
                             {m.book_title && (
@@ -979,7 +997,8 @@ export default function AdminStudentProfilePage() {
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </section>
