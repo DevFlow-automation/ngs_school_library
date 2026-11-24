@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
 import { GradeFilter, CategoryFilter, SortOption, ReaderTheme, ReaderFont } from '@/types/book';
 import { evaluateBookCompletion } from '@/lib/readingMetrics';
+import { sumPointAdjustments, type StudentPointAdjustment } from '@/lib/pointAdjustments';
 
 export interface StudentProfile {
   id: string;
@@ -136,6 +137,8 @@ interface ReadingState {
   sortBy: SortOption;
   myShelfIds: string[];
   readingProgress: Record<string, BookProgress>;
+  pointAdjustments: StudentPointAdjustment[];
+  bonusPoints: number;
 
   activeBookId: string | null;
   activeChapterIndex: number;
@@ -184,6 +187,8 @@ export const useReadingStore = create<ReadingState>()(
       sortBy: 'popular',
       myShelfIds: [],
       readingProgress: {},
+      pointAdjustments: [],
+      bonusPoints: 0,
 
       activeBookId: null,
       activeChapterIndex: 0,
@@ -226,7 +231,7 @@ export const useReadingStore = create<ReadingState>()(
           },
           isLoginModalOpen: false,
           ...(prevStudentId && prevStudentId !== existing.id
-            ? { readingProgress: {}, myShelfIds: [] }
+            ? { readingProgress: {}, myShelfIds: [], pointAdjustments: [], bonusPoints: 0 }
             : {}),
         });
 
@@ -239,6 +244,8 @@ export const useReadingStore = create<ReadingState>()(
           student: null,
           myShelfIds: [],
           readingProgress: {},
+          pointAdjustments: [],
+          bonusPoints: 0,
           unreadMessagesCount: 0,
           equippedFrameId: null,
           equippedAvatarId: 'default_reader',
@@ -330,6 +337,24 @@ export const useReadingStore = create<ReadingState>()(
             }
           });
           set({ myShelfIds: shelf, readingProgress: progressMap });
+        }
+
+        try {
+          const { data: adjData, error: adjError } = await supabase
+            .from('student_point_adjustments')
+            .select('id, student_id, points, reason, sender_name, created_at')
+            .eq('student_id', student.id)
+            .order('created_at', { ascending: false });
+
+          if (!adjError && adjData) {
+            const rows = adjData as StudentPointAdjustment[];
+            set({
+              pointAdjustments: rows,
+              bonusPoints: sumPointAdjustments(rows),
+            });
+          }
+        } catch {
+          // Таблица student_point_adjustments ещё может быть не создана
         }
       },
 
@@ -546,6 +571,7 @@ export const useReadingStore = create<ReadingState>()(
         student: state.student,
         myShelfIds: state.myShelfIds,
         readingProgress: state.readingProgress,
+        bonusPoints: state.bonusPoints,
         readerFontSize: state.readerFontSize,
         readerFontFamily: state.readerFontFamily,
         readerTheme: state.readerTheme,

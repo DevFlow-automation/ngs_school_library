@@ -23,6 +23,7 @@ export const HeroBento: React.FC = () => {
     myShelfIds,
     setActiveTab,
     readingProgress,
+    bonusPoints,
     student,
     unreadMessagesCount,
   } = useReadingStore();
@@ -98,7 +99,8 @@ export const HeroBento: React.FC = () => {
           avgSecondsPerPage: p.avgSecondsPerPage || 0,
           minSecondsPerPage: p.minSecondsPerPage ?? null,
         })),
-        student.gradeClass
+        student.gradeClass,
+        bonusPoints
       ).totalPoints
     : 0;
   const studentRank = student ? getStudentRank(studentPoints, getAgeGroup(student.gradeClass)) : null;

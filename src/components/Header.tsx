@@ -14,7 +14,7 @@ export const Header: React.FC = () => {
     student, isLoginModalOpen, setLoginModalOpen, 
     loginStudent, logoutStudent, syncFromSupabase,
     unreadMessagesCount, fetchUnreadMessagesCount,
-    readingProgress, equippedFrameId, equippedAvatarId
+    readingProgress, bonusPoints, equippedFrameId, equippedAvatarId
   } = useReadingStore();
   
   const [isDark, setIsDark] = useState(false);
@@ -59,9 +59,10 @@ export const Header: React.FC = () => {
         avgSecondsPerPage: p.avgSecondsPerPage || 0,
         minSecondsPerPage: p.minSecondsPerPage ?? null,
       })),
-      student.gradeClass
+      student.gradeClass,
+      bonusPoints
     );
-  }, [student, readingProgress]);
+  }, [student, readingProgress, bonusPoints]);
 
   const activeFrame = useMemo(() => {
     const reward = getFrameRewardById(equippedFrameId);

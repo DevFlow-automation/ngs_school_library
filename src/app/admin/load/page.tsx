@@ -27,6 +27,11 @@ import {
 } from '@/lib/readingMetrics';
 import { isAutoWarningMessage } from '@/lib/autoWarnings';
 import {
+  formatPointsDelta,
+  sumPointAdjustments,
+  type StudentPointAdjustment,
+} from '@/lib/pointAdjustments';
+import {
   calculateStudentPoints,
   getAgeGroup,
   getStudentRank,
@@ -176,8 +181,11 @@ export default function AdminDashboardPage() {
     'newest' | 'points_desc' | 'time_desc' | 'name_asc' | 'class_asc'
   >('newest');
 
-  // Сообщения ученикам
+  // Сообщения ученикам и ручные начисления баллов
   const [messagesByStudent, setMessagesByStudent] = useState<Record<string, StudentMessageItem[]>>({});
+  const [adjustmentsByStudent, setAdjustmentsByStudent] = useState<
+    Record<string, StudentPointAdjustment[]>
+  >({});
   const [messageTarget, setMessageTarget] = useState<{
     student: StudentRow;
     bookId: string | null;
@@ -229,6 +237,23 @@ export default function AdminDashboardPage() {
       }
     } catch {
       // Таблица student_messages ещё не создана
+    }
+
+    try {
+      const { data: adjData, error: adjError } = await supabase
+        .from('student_point_adjustments')
+        .select('id, student_id, points, reason, sender_name, created_at')
+        .order('created_at', { ascending: false });
+      if (!adjError && adjData) {
+        const groupedAdj: Record<string, StudentPointAdjustment[]> = {};
+        for (const row of adjData as StudentPointAdjustment[]) {
+          if (!groupedAdj[row.student_id]) groupedAdj[row.student_id] = [];
+          groupedAdj[row.student_id].push(row);
+        }
+        setAdjustmentsByStudent(groupedAdj);
+      }
+    } catch {
+      // Таблица student_point_adjustments ещё не создана
     }
   };
 
@@ -447,7 +472,8 @@ export default function AdminDashboardPage() {
         avgSecondsPerPage: r.avg_seconds_per_page || 0,
         minSecondsPerPage: r.min_seconds_per_page ?? null,
       })),
-      st.grade_class
+      st.grade_class,
+      sumPointAdjustments(adjustmentsByStudent[st.id])
     ).totalPoints;
 
   const getStudentReadingSeconds = (st: StudentRow) =>
@@ -526,6 +552,7 @@ export default function AdminDashboardPage() {
     studentStatusFilter,
     studentSortBy,
     messagesByStudent,
+    adjustmentsByStudent,
   ]);
 
   const hasActiveStudentFilters =
@@ -1511,6 +1538,7 @@ export default function AdminDashboardPage() {
                     0
                   );
                   const hasSuspiciousBook = isStudentSuspicious(st);
+                  const stBonusPoints = sumPointAdjustments(adjustmentsByStudent[st.id]);
                   const stPoints = calculateStudentPoints(
                     (st.reading_progress || []).map((r) => ({
                       progressPercent: r.progress_percent || 0,
@@ -1520,7 +1548,8 @@ export default function AdminDashboardPage() {
                       avgSecondsPerPage: r.avg_seconds_per_page || 0,
                       minSecondsPerPage: r.min_seconds_per_page ?? null,
                     })),
-                    st.grade_class
+                    st.grade_class,
+                    stBonusPoints
                   );
                   const stRank = getStudentRank(stPoints.totalPoints, getAgeGroup(st.grade_class));
 
@@ -1552,6 +1581,18 @@ export default function AdminDashboardPage() {
                           >
                             ⭐ {stPoints.totalPoints} б. • {stRank.current.icon} {stRank.current.title}
                           </span>
+                          {stPoints.bonusPoints !== 0 && (
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold font-mono ${
+                                stPoints.bonusPoints > 0
+                                  ? 'bg-purple-100 dark:bg-purple-950/50 text-purple-800 dark:text-purple-300'
+                                  : 'bg-rose-100 dark:bg-rose-950/50 text-rose-800 dark:text-rose-300'
+                              }`}
+                              title="Ручная корректировка баллов"
+                            >
+                              🎁 {formatPointsDelta(stPoints.bonusPoints)}
+                            </span>
+                          )}
                           {hasSuspiciousBook && (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300 flex items-center gap-1">
                               <ShieldAlert className="w-3 h-3" />
@@ -1565,6 +1606,13 @@ export default function AdminDashboardPage() {
                             Всего: {formatReadingDuration(totalReadingSec)}
                           </span>
                           <span>Книг: {st.reading_progress?.length || 0}</span>
+                          <Link
+                            href={`/admin/students/${st.id}?tab=rewards`}
+                            className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-bold inline-flex items-center gap-1 shadow-sm transition-colors"
+                            title="Начислить или списать баллы ученику"
+                          >
+                            <span>⭐ Баллы</span>
+                          </Link>
                           <button
                             type="button"
                             onClick={() =>

@@ -15,6 +15,12 @@ import {
 } from '@/lib/readingMetrics';
 import { isAutoWarningMessage } from '@/lib/autoWarnings';
 import {
+  formatPointsDelta,
+  isMissingPointAdjustmentsTableError,
+  sumPointAdjustments,
+  type StudentPointAdjustment,
+} from '@/lib/pointAdjustments';
+import {
   POINTS_PER_HONEST_PAGE,
   calculateStudentPoints,
   getAgeGroup,
@@ -46,6 +52,9 @@ import {
   AlertTriangle,
   Info,
   CheckCircle2,
+  PlusCircle,
+  MinusCircle,
+  Gift,
 } from 'lucide-react';
 
 interface ProgressRow {
@@ -98,6 +107,16 @@ const QUICK_TEMPLATES = [
   'Отличная работа и внимательное чтение! Так держать!',
 ];
 
+const QUICK_POINTS_REASONS = [
+  'Активное участие в библиотечном мероприятии',
+  'Победа в читательском конкурсе',
+  'Отличный отзыв о прочитанной книге',
+  'Помощь школьной библиотеке',
+  'Корректировка баллов за чтение',
+];
+
+const QUICK_POINTS_AMOUNTS = [10, 25, 50, 100];
+
 export default function AdminStudentProfilePage() {
   const params = useParams();
   const studentId = Array.isArray(params?.id) ? params.id[0] : String(params?.id || '');
@@ -114,6 +133,8 @@ export default function AdminStudentProfilePage() {
   const [student, setStudent] = useState<StudentDetail | null>(null);
   const [booksMap, setBooksMap] = useState<Record<string, BookInfo>>({});
   const [messages, setMessages] = useState<StudentMessageItem[]>([]);
+  const [pointAdjustments, setPointAdjustments] = useState<StudentPointAdjustment[]>([]);
+  const [adjustmentsTableMissing, setAdjustmentsTableMissing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -125,6 +146,16 @@ export default function AdminStudentProfilePage() {
   }>({ id: null, title: null });
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState('');
+
+  // Форма ручного начисления / списания баллов
+  const [adjustMode, setAdjustMode] = useState<'add' | 'subtract'>('add');
+  const [adjustAmount, setAdjustAmount] = useState('25');
+  const [adjustReason, setAdjustReason] = useState('');
+  const [notifyOnAdjust, setNotifyOnAdjust] = useState(true);
+  const [isSubmittingAdjust, setIsSubmittingAdjust] = useState(false);
+  const [adjustError, setAdjustError] = useState('');
+  const [adjustSuccess, setAdjustSuccess] = useState('');
+  const [deletingAdjId, setDeletingAdjId] = useState<string | null>(null);
 
   const loadStudentData = useCallback(async () => {
     if (!studentId) return;
@@ -167,10 +198,42 @@ export default function AdminStudentProfilePage() {
       } catch {
         // Таблица student_messages ещё не создана
       }
+
+      try {
+        const { data: adjData, error: adjError } = await supabase
+          .from('student_point_adjustments')
+          .select('id, student_id, points, reason, sender_name, created_at')
+          .eq('student_id', studentId)
+          .order('created_at', { ascending: false });
+        if (adjError) {
+          if (isMissingPointAdjustmentsTableError(adjError)) {
+            setAdjustmentsTableMissing(true);
+          }
+          setPointAdjustments([]);
+        } else {
+          setAdjustmentsTableMissing(false);
+          setPointAdjustments((adjData || []) as StudentPointAdjustment[]);
+        }
+      } catch {
+        setPointAdjustments([]);
+      }
     } finally {
       setIsLoading(false);
     }
   }, [studentId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const tabParam = new URLSearchParams(window.location.search).get('tab');
+    if (
+      tabParam === 'reading' ||
+      tabParam === 'rewards' ||
+      tabParam === 'avatars' ||
+      tabParam === 'messages'
+    ) {
+      setActiveTab(tabParam);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -264,6 +327,84 @@ export default function AdminStudentProfilePage() {
     await loadStudentData();
   };
 
+  const handleCreatePointAdjustment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!student) return;
+
+    const absPoints = Math.trunc(Number(adjustAmount));
+    if (!Number.isFinite(absPoints) || absPoints <= 0) {
+      setAdjustError('Введите положительное целое количество баллов.');
+      return;
+    }
+
+    const signedPoints = adjustMode === 'add' ? absPoints : -absPoints;
+    const cleanReason = adjustReason.trim();
+    if (cleanReason.length < 2) {
+      setAdjustError('Укажите причину начисления или списания баллов.');
+      return;
+    }
+
+    setIsSubmittingAdjust(true);
+    setAdjustError('');
+    setAdjustSuccess('');
+    try {
+      const res = await fetch('/api/point-adjustments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: student.id,
+          points: signedPoints,
+          reason: cleanReason,
+          notifyStudent: notifyOnAdjust,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        if (data?.tableMissing) setAdjustmentsTableMissing(true);
+        setAdjustError(data?.error || 'Не удалось сохранить изменение баллов.');
+        return;
+      }
+
+      setAdjustReason('');
+      setAdjustSuccess(
+        signedPoints > 0
+          ? `Начислено +${absPoints} б. ученику ${student.full_name}`
+          : `Списано ${absPoints} б. у ученика ${student.full_name}`
+      );
+      await loadStudentData();
+    } catch {
+      setAdjustError('Ошибка сети при сохранении баллов.');
+    } finally {
+      setIsSubmittingAdjust(false);
+    }
+  };
+
+  const handleDeletePointAdjustment = async (adj: StudentPointAdjustment) => {
+    const ok = window.confirm(
+      `Отменить запись (${formatPointsDelta(adj.points)} — «${adj.reason || 'Корректировка'}»)?\nИтоговые баллы ученика сразу пересчитаются.`
+    );
+    if (!ok) return;
+
+    setDeletingAdjId(adj.id);
+    setAdjustError('');
+    setAdjustSuccess('');
+    try {
+      const res = await fetch(`/api/point-adjustments/${adj.id}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setAdjustError(data?.error || 'Не удалось отменить запись.');
+        return;
+      }
+      await loadStudentData();
+    } catch {
+      setAdjustError('Ошибка сети при удалении записи.');
+    } finally {
+      setDeletingAdjId(null);
+    }
+  };
+
   const handleResetBookProgress = async (row: ProgressRow, bookTitle: string) => {
     if (!student) return;
     const ok = window.confirm(
@@ -309,6 +450,11 @@ export default function AdminStudentProfilePage() {
   const ageGroup = useMemo(() => getAgeGroup(student?.grade_class), [student?.grade_class]);
   const ageGroupMeta = useMemo(() => getAgeGroupMeta(ageGroup), [ageGroup]);
 
+  const bonusPointsTotal = useMemo(
+    () => sumPointAdjustments(pointAdjustments),
+    [pointAdjustments]
+  );
+
   const pointsBreakdown = useMemo(
     () =>
       calculateStudentPoints(
@@ -320,9 +466,10 @@ export default function AdminStudentProfilePage() {
           avgSecondsPerPage: r.avg_seconds_per_page || 0,
           minSecondsPerPage: r.min_seconds_per_page ?? null,
         })),
-        student?.grade_class
+        student?.grade_class,
+        bonusPointsTotal
       ),
-    [progressRows, student?.grade_class]
+    [progressRows, student?.grade_class, bonusPointsTotal]
   );
 
   const rankProgress = useMemo(
@@ -536,14 +683,24 @@ export default function AdminStudentProfilePage() {
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('messages')}
-                    className="px-3.5 py-1.5 rounded-xl bg-white text-[#1C244B] hover:bg-amber-100 text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow transition-colors"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5 text-[#3F51B5]" />
-                    <span>Написать ученику ({messages.length})</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('rewards')}
+                      className="px-3.5 py-1.5 rounded-xl bg-amber-400 text-[#1C244B] hover:bg-amber-300 text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow transition-colors"
+                    >
+                      <Gift className="w-3.5 h-3.5" />
+                      <span>Начислить баллы</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('messages')}
+                      className="px-3.5 py-1.5 rounded-xl bg-white text-[#1C244B] hover:bg-amber-100 text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow transition-colors"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5 text-[#3F51B5]" />
+                      <span>Написать ученику ({messages.length})</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </section>
@@ -784,6 +941,17 @@ export default function AdminStudentProfilePage() {
                   <span className="px-2.5 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 font-bold">
                     🏆 Прочитанные книги: +{pointsBreakdown.completionPoints} б. ({pointsBreakdown.honestCompletedBooks})
                   </span>
+                  {pointsBreakdown.bonusPoints !== 0 && (
+                    <span
+                      className={`px-2.5 py-1.5 rounded-xl font-bold ${
+                        pointsBreakdown.bonusPoints > 0
+                          ? 'bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300'
+                          : 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300'
+                      }`}
+                    >
+                      🎁 Ручные корректировки: {formatPointsDelta(pointsBreakdown.bonusPoints)}
+                    </span>
+                  )}
                   <span
                     className="px-2.5 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 font-bold"
                     title="Время используется только как античит-проверка темпа и не даёт отдельных баллов за простой вкладки"
@@ -794,6 +962,225 @@ export default function AdminStudentProfilePage() {
                     <span className="px-2.5 py-1.5 rounded-xl bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 font-bold">
                       ⛔ Отброшено быстрых кликов: {pointsBreakdown.fastPagesIgnored}
                     </span>
+                  )}
+                </div>
+
+                {/* Форма ручного начисления / списания баллов + история */}
+                <div className="p-4 rounded-2xl bg-[#F8F9FE] dark:bg-[#151820] border border-gray-200/80 dark:border-gray-800 space-y-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Gift className="w-4 h-4 text-amber-500" />
+                      <h2 className="text-xs sm:text-sm font-extrabold text-gray-900 dark:text-white">
+                        Начислить или списать баллы вручную
+                      </h2>
+                    </div>
+                    <div className="inline-flex rounded-xl bg-white dark:bg-[#1C1F26] p-0.5 border border-gray-200 dark:border-gray-700">
+                      <button
+                        type="button"
+                        onClick={() => setAdjustMode('add')}
+                        className={`px-3 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 transition-colors ${
+                          adjustMode === 'add'
+                            ? 'bg-emerald-600 text-white shadow-sm'
+                            : 'text-gray-600 dark:text-gray-300 hover:text-emerald-700'
+                        }`}
+                      >
+                        <PlusCircle className="w-3.5 h-3.5" />
+                        <span>Начислить</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdjustMode('subtract')}
+                        className={`px-3 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 transition-colors ${
+                          adjustMode === 'subtract'
+                            ? 'bg-rose-600 text-white shadow-sm'
+                            : 'text-gray-600 dark:text-gray-300 hover:text-rose-700'
+                        }`}
+                      >
+                        <MinusCircle className="w-3.5 h-3.5" />
+                        <span>Списать</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {adjustmentsTableMissing && (
+                    <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      <span>
+                        Таблица <b>student_point_adjustments</b> ещё не создана в Supabase. Выполните один раз SQL из файла{' '}
+                        <code className="px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-900/50 font-mono text-[11px]">
+                          supabase_point_adjustments.sql
+                        </code>{' '}
+                        в Supabase Dashboard → SQL Editor.
+                      </span>
+                    </div>
+                  )}
+
+                  <form onSubmit={handleCreatePointAdjustment} className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                      <div className="sm:col-span-4 space-y-1.5">
+                        <label className="text-[11px] font-bold text-gray-600 dark:text-gray-300 block">
+                          Количество баллов
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={10000}
+                          step={1}
+                          required
+                          value={adjustAmount}
+                          onChange={(e) => setAdjustAmount(e.target.value)}
+                          placeholder="Например: 25"
+                          className="w-full px-3.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#1C1F26] text-sm font-mono font-bold outline-none focus:border-indigo-500"
+                        />
+                        <div className="flex flex-wrap gap-1">
+                          {QUICK_POINTS_AMOUNTS.map((val) => (
+                            <button
+                              key={val}
+                              type="button"
+                              onClick={() => setAdjustAmount(String(val))}
+                              className={`px-2 py-0.5 rounded-lg text-[10.5px] font-mono font-bold border transition-colors ${
+                                adjustAmount === String(val)
+                                  ? adjustMode === 'add'
+                                    ? 'bg-emerald-100 dark:bg-emerald-950/60 border-emerald-400 text-emerald-800 dark:text-emerald-200'
+                                    : 'bg-rose-100 dark:bg-rose-950/60 border-rose-400 text-rose-800 dark:text-rose-200'
+                                  : 'bg-white dark:bg-[#1C1F26] border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-indigo-400'
+                              }`}
+                            >
+                              {adjustMode === 'add' ? `+${val}` : `−${val}`}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="sm:col-span-8 space-y-1.5">
+                        <label className="text-[11px] font-bold text-gray-600 dark:text-gray-300 block">
+                          Причина (ученик увидит её в своём профиле)
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          maxLength={300}
+                          value={adjustReason}
+                          onChange={(e) => setAdjustReason(e.target.value)}
+                          placeholder="Например: За победу в читательском конкурсе"
+                          className="w-full px-3.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#1C1F26] text-sm outline-none focus:border-indigo-500"
+                        />
+                        <div className="flex flex-wrap gap-1">
+                          {QUICK_POINTS_REASONS.map((tpl) => (
+                            <button
+                              key={tpl}
+                              type="button"
+                              onClick={() => setAdjustReason(tpl)}
+                              className="px-2 py-0.5 rounded-lg bg-white dark:bg-[#1C1F26] border border-gray-200 dark:border-gray-700 hover:border-indigo-500 text-[10.5px] text-gray-600 dark:text-gray-300"
+                            >
+                              {tpl}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                      <label className="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={notifyOnAdjust}
+                          onChange={(e) => setNotifyOnAdjust(e.target.checked)}
+                          className="w-4 h-4 rounded accent-[#3F51B5]"
+                        />
+                        <span>Отправить ученику уведомление в личный кабинет</span>
+                      </label>
+
+                      <button
+                        type="submit"
+                        disabled={isSubmittingAdjust || !adjustReason.trim()}
+                        className={`px-4 py-2 rounded-xl text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50 ${
+                          adjustMode === 'add'
+                            ? 'bg-emerald-600 hover:bg-emerald-700'
+                            : 'bg-rose-600 hover:bg-rose-700'
+                        }`}
+                      >
+                        {adjustMode === 'add' ? (
+                          <PlusCircle className="w-3.5 h-3.5" />
+                        ) : (
+                          <MinusCircle className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {isSubmittingAdjust
+                            ? 'Сохранение...'
+                            : adjustMode === 'add'
+                            ? `Начислить +${Math.max(0, Math.trunc(Number(adjustAmount) || 0))} б.`
+                            : `Списать −${Math.max(0, Math.trunc(Number(adjustAmount) || 0))} б.`}
+                        </span>
+                      </button>
+                    </div>
+
+                    {adjustError && (
+                      <div className="text-xs font-semibold text-red-600 dark:text-red-400">
+                        {adjustError}
+                      </div>
+                    )}
+                    {adjustSuccess && (
+                      <div className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                        ✓ {adjustSuccess}
+                      </div>
+                    )}
+                  </form>
+
+                  {/* История ручных начислений и списаний */}
+                  {pointAdjustments.length > 0 && (
+                    <div className="pt-3 border-t border-gray-200/80 dark:border-gray-800 space-y-2">
+                      <div className="text-[11px] font-extrabold text-gray-600 dark:text-gray-300 uppercase tracking-wider">
+                        История ручных начислений ({pointAdjustments.length})
+                      </div>
+                      <div className="space-y-1.5">
+                        {pointAdjustments.map((adj) => (
+                          <div
+                            key={adj.id}
+                            className="p-2.5 rounded-xl bg-white dark:bg-[#1C1F26] border border-gray-200/70 dark:border-gray-800 flex items-center justify-between gap-2 text-xs"
+                          >
+                            <div className="min-w-0 space-y-0.5">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span
+                                  className={`px-2 py-0.5 rounded-lg font-mono font-extrabold text-[11px] ${
+                                    adj.points > 0
+                                      ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+                                      : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                                  }`}
+                                >
+                                  {formatPointsDelta(adj.points)}
+                                </span>
+                                <span className="font-semibold text-gray-800 dark:text-gray-100">
+                                  {adj.reason || 'Корректировка баллов'}
+                                </span>
+                              </div>
+                              <div className="text-[10.5px] text-gray-400 flex flex-wrap items-center gap-1.5">
+                                <span>{adj.sender_name}</span>
+                                <span>•</span>
+                                <span className="font-mono">
+                                  {new Date(adj.created_at).toLocaleString('ru-RU', {
+                                    day: '2-digit',
+                                    month: '2-digit',
+                                    year: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </span>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={deletingAdjId === adj.id}
+                              onClick={() => handleDeletePointAdjustment(adj)}
+                              className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 shrink-0 disabled:opacity-40"
+                              title="Отменить это начисление / списание"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   )}
                 </div>
 

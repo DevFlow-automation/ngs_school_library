@@ -12,6 +12,7 @@ import {
 } from '@/lib/gamification';
 import { AVATAR_RARITY_META, getAvatarsForAgeGroup } from '@/lib/avatars';
 import { formatReadingDuration } from '@/lib/readingMetrics';
+import { sumPointAdjustments } from '@/lib/pointAdjustments';
 import { Trophy, Sparkles, Clock, BookOpen, Loader2 } from 'lucide-react';
 
 interface RawStudentRow {
@@ -81,14 +82,27 @@ export const TopReadersLeaderboard: React.FC = () => {
 
     async function fetchLeaderboard() {
       try {
-        const { data, error } = await supabase
-          .from('students')
-          .select('id, full_name, grade_class, reading_progress(*)');
+        const [{ data, error }, adjRes] = await Promise.all([
+          supabase
+            .from('students')
+            .select('id, full_name, grade_class, reading_progress(*)'),
+          supabase
+            .from('student_point_adjustments')
+            .select('student_id, points'),
+        ]);
 
         if (cancelled) return;
         if (error || !data) {
           setIsLoaded(true);
           return;
+        }
+
+        const adjustmentsByStudent: Record<string, { points: number }[]> = {};
+        if (!adjRes.error && adjRes.data) {
+          for (const row of adjRes.data as { student_id: string; points: number }[]) {
+            if (!adjustmentsByStudent[row.student_id]) adjustmentsByStudent[row.student_id] = [];
+            adjustmentsByStudent[row.student_id].push(row);
+          }
         }
 
         const computed: RankedStudent[] = (data as RawStudentRow[]).map((st) => {
@@ -105,7 +119,8 @@ export const TopReadersLeaderboard: React.FC = () => {
                 : null,
           }));
 
-          const pts = calculateStudentPoints(metrics, st.grade_class);
+          const bonusPoints = sumPointAdjustments(adjustmentsByStudent[st.id]);
+          const pts = calculateStudentPoints(metrics, st.grade_class, bonusPoints);
           const rank = getStudentRank(pts.totalPoints, ageGroup);
           const avatars = getAvatarsForAgeGroup(ageGroup);
           const unlocked = avatars.filter((av) => pts.totalPoints >= av.requiredPoints);

@@ -72,6 +72,7 @@ export const ReaderModal: React.FC = () => {
     closeReader, 
     setChapterIndex,
     readingProgress,
+    bonusPoints,
     saveProgress,
     recordReadingMetrics,
     fetchUnreadMessagesCount,
@@ -682,7 +683,8 @@ export const ReaderModal: React.FC = () => {
       avgSecondsPerPage: p.avgSecondsPerPage || 0,
       minSecondsPerPage: p.minSecondsPerPage ?? null,
     })),
-    student?.gradeClass
+    student?.gradeClass,
+    bonusPoints
   ).totalPoints;
   const unlockableThemes = getUnlockableThemesForAgeGroup(studentAgeGroup);
 

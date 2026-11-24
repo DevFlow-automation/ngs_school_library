@@ -42,6 +42,7 @@ export interface PointsBreakdown {
   timePoints: number;
   honestPagePoints: number;
   completionPoints: number;
+  bonusPoints: number;
   totalReadingSeconds: number;
   honestPagesCount: number;
   fastPagesIgnored: number;
@@ -458,7 +459,8 @@ export const POINTS_PER_HONEST_PAGE = 3;
  */
 export function calculateStudentPoints(
   entries: ReadingMetricsSnapshot[],
-  gradeClass?: string | null
+  gradeClass?: string | null,
+  bonusPoints = 0
 ): PointsBreakdown {
   const ageGroup = getAgeGroup(gradeClass);
   const { completionBonus } = getAgeGroupMeta(ageGroup);
@@ -494,12 +496,15 @@ export function calculateStudentPoints(
   const honestPagePoints = honestPagesCount * POINTS_PER_HONEST_PAGE;
   // Бонус за честно дочитанную книгу (зависит от возраста)
   const completionPoints = honestCompletedBooks * completionBonus;
+  // Ручная корректировка баллов от администратора/куратора
+  const safeBonusPoints = Math.trunc(Number(bonusPoints) || 0);
 
   return {
-    totalPoints: honestPagePoints + completionPoints,
+    totalPoints: Math.max(0, honestPagePoints + completionPoints + safeBonusPoints),
     timePoints,
     honestPagePoints,
     completionPoints,
+    bonusPoints: safeBonusPoints,
     totalReadingSeconds,
     honestPagesCount,
     fastPagesIgnored,

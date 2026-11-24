@@ -12,6 +12,7 @@ import { Book } from '@/types/book';
 import { fetchBooksMetadata, getCachedBooks } from '@/lib/booksService';
 import { evaluateBookCompletion, formatReadingDuration } from '@/lib/readingMetrics';
 import { isAutoWarningMessage } from '@/lib/autoWarnings';
+import { formatPointsDelta } from '@/lib/pointAdjustments';
 import {
   POINTS_PER_HONEST_PAGE,
   calculateStudentPoints,
@@ -84,6 +85,8 @@ export default function StudentProfilePage() {
     student,
     myShelfIds,
     readingProgress,
+    bonusPoints,
+    pointAdjustments,
     setLoginModalOpen,
     openReader,
     syncFromSupabase,
@@ -254,9 +257,10 @@ export default function StudentProfilePage() {
           avgSecondsPerPage: progress.avgSecondsPerPage || 0,
           minSecondsPerPage: progress.minSecondsPerPage ?? null,
         })),
-        student?.gradeClass
+        student?.gradeClass,
+        bonusPoints
       ),
-    [readingEntries, student?.gradeClass]
+    [readingEntries, student?.gradeClass, bonusPoints]
   );
 
   const rankProgress = useMemo(
@@ -871,6 +875,17 @@ export default function StudentProfilePage() {
                     <span className="px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 font-bold">
                       🏆 Книги: +{pointsBreakdown.completionPoints} б. ({pointsBreakdown.honestCompletedBooks})
                     </span>
+                    {pointsBreakdown.bonusPoints !== 0 && (
+                      <span
+                        className={`px-2.5 py-1 rounded-lg font-bold ${
+                          pointsBreakdown.bonusPoints > 0
+                            ? 'bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300'
+                            : 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300'
+                        }`}
+                      >
+                        🎁 От библиотеки: {formatPointsDelta(pointsBreakdown.bonusPoints)}
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1">
@@ -904,6 +919,53 @@ export default function StudentProfilePage() {
                     +{POINTS_PER_HONEST_PAGE} б./честная стр., +{pointsBreakdown.completionBonusPerBook} б./книга ({ageGroupMeta.label}). Быстрое пролистывание, повторное листание туда-сюда и простой вкладки не приносят баллов.
                   </span>
                 </div>
+
+                {pointAdjustments.length > 0 && (
+                  <div className="p-3.5 rounded-2xl bg-[#F8F9FE] dark:bg-[#151820] border border-[#E0E2EC]/70 dark:border-[#2F323D] space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-extrabold text-[#191C20] dark:text-white">
+                        🎁 Начисления и корректировки от библиотеки ({pointAdjustments.length})
+                      </span>
+                      <span
+                        className={`text-[11px] font-mono font-extrabold ${
+                          pointsBreakdown.bonusPoints >= 0
+                            ? 'text-emerald-700 dark:text-emerald-400'
+                            : 'text-rose-700 dark:text-rose-400'
+                        }`}
+                      >
+                        Итого: {formatPointsDelta(pointsBreakdown.bonusPoints)}
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {pointAdjustments.map((adj) => (
+                        <div
+                          key={adj.id}
+                          className="px-3 py-2 rounded-xl bg-white dark:bg-[#1C1F26] border border-[#E0E2EC]/60 dark:border-[#2F323D] flex flex-wrap items-center justify-between gap-2 text-xs"
+                        >
+                          <div className="flex flex-wrap items-center gap-2 min-w-0">
+                            <span
+                              className={`px-2 py-0.5 rounded-lg font-mono font-extrabold text-[11px] shrink-0 ${
+                                adj.points > 0
+                                  ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+                                  : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                              }`}
+                            >
+                              {formatPointsDelta(adj.points)}
+                            </span>
+                            <span className="text-[#191C20] dark:text-[#E2E2E9] font-medium">
+                              {adj.reason || 'Корректировка баллов'}
+                            </span>
+                          </div>
+                          <div className="text-[10.5px] text-[#74777F] dark:text-[#90939C] flex items-center gap-1.5 shrink-0">
+                            <span>{adj.sender_name}</span>
+                            <span>•</span>
+                            <span className="font-mono">{formatMessageDate(adj.created_at)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
                   {filteredRewards.map((reward) => {
