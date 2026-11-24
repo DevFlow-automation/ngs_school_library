@@ -7,6 +7,13 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { StudentAvatar } from '@/components/StudentAvatar';
+import { AdminProgressEditorModal } from '@/components/AdminProgressEditorModal';
+import {
+  getResetBackupsForStudent,
+  removeResetBackup,
+  saveResetBackup,
+  type ResetProgressBackup,
+} from '@/lib/progressBackups';
 import {
   evaluateBookCompletion,
   evaluateReadingPace,
@@ -55,6 +62,10 @@ import {
   PlusCircle,
   MinusCircle,
   Gift,
+  Edit3,
+  RotateCcw,
+  Plus,
+  Sliders,
 } from 'lucide-react';
 
 interface ProgressRow {
@@ -108,6 +119,7 @@ const QUICK_TEMPLATES = [
 ];
 
 const QUICK_POINTS_REASONS = [
+  'Восстановление баллов и достижений после сброса',
   'Активное участие в библиотечном мероприятии',
   'Победа в читательском конкурсе',
   'Отличный отзыв о прочитанной книге',
@@ -115,7 +127,7 @@ const QUICK_POINTS_REASONS = [
   'Корректировка баллов за чтение',
 ];
 
-const QUICK_POINTS_AMOUNTS = [10, 25, 50, 100];
+const QUICK_POINTS_AMOUNTS = [10, 25, 50, 100, 250, 500];
 
 export default function AdminStudentProfilePage() {
   const params = useParams();
@@ -132,11 +144,20 @@ export default function AdminStudentProfilePage() {
 
   const [student, setStudent] = useState<StudentDetail | null>(null);
   const [booksMap, setBooksMap] = useState<Record<string, BookInfo>>({});
+  const [booksList, setBooksList] = useState<BookInfo[]>([]);
   const [messages, setMessages] = useState<StudentMessageItem[]>([]);
   const [pointAdjustments, setPointAdjustments] = useState<StudentPointAdjustment[]>([]);
   const [adjustmentsTableMissing, setAdjustmentsTableMissing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+
+  // Редактор прогресса по книгам (главы, страницы, время, % и восстановление)
+  const [progressEditorState, setProgressEditorState] = useState<{
+    open: boolean;
+    row: ProgressRow | null;
+  }>({ open: false, row: null });
+  const [resetBackups, setResetBackups] = useState<ResetProgressBackup[]>([]);
+  const [restoringBackupId, setRestoringBackupId] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<AdminStudentTab>('reading');
   const [messageDraft, setMessageDraft] = useState('');
@@ -147,9 +168,10 @@ export default function AdminStudentProfilePage() {
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState('');
 
-  // Форма ручного начисления / списания баллов
-  const [adjustMode, setAdjustMode] = useState<'add' | 'subtract'>('add');
+  // Форма ручного начисления / списания / установки точного значения баллов
+  const [adjustMode, setAdjustMode] = useState<'add' | 'subtract' | 'set'>('add');
   const [adjustAmount, setAdjustAmount] = useState('25');
+  const [targetPointsInput, setTargetPointsInput] = useState('100');
   const [adjustReason, setAdjustReason] = useState('');
   const [notifyOnAdjust, setNotifyOnAdjust] = useState(true);
   const [isSubmittingAdjust, setIsSubmittingAdjust] = useState(false);
@@ -179,10 +201,14 @@ export default function AdminStudentProfilePage() {
       }
 
       if (booksRes.data) {
+        const list = (booksRes.data as BookInfo[]).sort((a, b) =>
+          a.title.localeCompare(b.title, 'ru')
+        );
         const map: Record<string, BookInfo> = {};
-        for (const b of booksRes.data as BookInfo[]) {
+        for (const b of list) {
           map[b.id] = b;
         }
+        setBooksList(list);
         setBooksMap(map);
       }
 
@@ -263,8 +289,9 @@ export default function AdminStudentProfilePage() {
   useEffect(() => {
     if (isAuthorized) {
       loadStudentData();
+      setResetBackups(getResetBackupsForStudent(studentId));
     }
-  }, [isAuthorized, loadStudentData]);
+  }, [isAuthorized, loadStudentData, studentId]);
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -331,16 +358,41 @@ export default function AdminStudentProfilePage() {
     e.preventDefault();
     if (!student) return;
 
-    const absPoints = Math.trunc(Number(adjustAmount));
-    if (!Number.isFinite(absPoints) || absPoints <= 0) {
-      setAdjustError('Введите положительное целое количество баллов.');
-      return;
+    let signedPoints = 0;
+    let absPoints = 0;
+
+    if (adjustMode === 'set') {
+      const targetPoints = Math.trunc(Number(targetPointsInput));
+      if (!Number.isFinite(targetPoints) || targetPoints < 0 || targetPoints > 100000) {
+        setAdjustError('Введите корректное итоговое число баллов (от 0 до 100 000).');
+        return;
+      }
+      const rawCurrentTotal =
+        pointsBreakdown.honestPagePoints +
+        pointsBreakdown.completionPoints +
+        pointsBreakdown.bonusPoints;
+      signedPoints = targetPoints - rawCurrentTotal;
+      absPoints = Math.abs(signedPoints);
+      if (signedPoints === 0) {
+        setAdjustError('У ученика уже установлено ровно это количество баллов.');
+        return;
+      }
+      if (absPoints > 10000) {
+        setAdjustError('Разница за одну операцию не может превышать 10 000 б.');
+        return;
+      }
+    } else {
+      absPoints = Math.trunc(Number(adjustAmount));
+      if (!Number.isFinite(absPoints) || absPoints <= 0) {
+        setAdjustError('Введите положительное целое количество баллов.');
+        return;
+      }
+      signedPoints = adjustMode === 'add' ? absPoints : -absPoints;
     }
 
-    const signedPoints = adjustMode === 'add' ? absPoints : -absPoints;
     const cleanReason = adjustReason.trim();
     if (cleanReason.length < 2) {
-      setAdjustError('Укажите причину начисления или списания баллов.');
+      setAdjustError('Укажите причину изменения баллов.');
       return;
     }
 
@@ -367,7 +419,9 @@ export default function AdminStudentProfilePage() {
 
       setAdjustReason('');
       setAdjustSuccess(
-        signedPoints > 0
+        adjustMode === 'set'
+          ? `Установлено ${Math.trunc(Number(targetPointsInput))} б. для ${student.full_name} (корректировка ${formatPointsDelta(signedPoints)})`
+          : signedPoints > 0
           ? `Начислено +${absPoints} б. ученику ${student.full_name}`
           : `Списано ${absPoints} б. у ученика ${student.full_name}`
       );
@@ -408,34 +462,101 @@ export default function AdminStudentProfilePage() {
   const handleResetBookProgress = async (row: ProgressRow, bookTitle: string) => {
     if (!student) return;
     const ok = window.confirm(
-      `Сбросить прогресс и обнулить время/клики ученика «${student.full_name}» по книге «${bookTitle}»?\nБаллы и рейтинг пересчитаются сразу.`
+      `Сбросить прогресс и обнулить время/клики ученика «${student.full_name}» по книге «${bookTitle}»?\nСнимок прогресса сохранится в списке отката — вы сможете восстановить его в 1 клик.`
     );
     if (!ok) return;
 
-    const { error: updateErr } = await supabase
-      .from('reading_progress')
-      .update({
-        current_chapter: 0,
-        current_page: 0,
-        progress_percent: 0,
-        reading_seconds: 0,
-        pages_turned: 0,
-        fast_turns_count: 0,
-        avg_seconds_per_page: 0,
-        min_seconds_per_page: null,
-      })
-      .eq('id', row.id);
+    try {
+      const res = await fetch('/api/student-progress', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          progressId: row.id,
+          studentId: student.id,
+          bookId: row.book_id,
+          keepBookmark: row.is_bookmarked,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        alert(data?.error || 'Не удалось сбросить прогресс');
+        return;
+      }
 
-    if (updateErr) {
-      alert('Не удалось сбросить прогресс: ' + updateErr.message);
-      return;
+      const snapshotRow = data?.previousRow || row;
+      saveResetBackup({
+        studentId: student.id,
+        studentName: student.full_name,
+        bookId: row.book_id,
+        bookTitle,
+        snapshot: {
+          book_id: row.book_id,
+          is_bookmarked: Boolean(snapshotRow.is_bookmarked),
+          current_chapter: Number(snapshotRow.current_chapter || 0),
+          current_page: Number(snapshotRow.current_page || 0),
+          progress_percent: Number(snapshotRow.progress_percent || 0),
+          reading_seconds: Number(snapshotRow.reading_seconds || 0),
+          pages_turned: Number(snapshotRow.pages_turned || 0),
+          fast_turns_count: Number(snapshotRow.fast_turns_count || 0),
+          avg_seconds_per_page: Number(snapshotRow.avg_seconds_per_page || 0),
+          min_seconds_per_page:
+            snapshotRow.min_seconds_per_page !== null && snapshotRow.min_seconds_per_page !== undefined
+              ? Number(snapshotRow.min_seconds_per_page)
+              : null,
+          last_read_at: snapshotRow.last_read_at || null,
+        },
+      });
+      setResetBackups(getResetBackupsForStudent(student.id));
+      await loadStudentData();
+    } catch {
+      alert('Ошибка сети при сбросе прогресса.');
     }
+  };
 
-    if (!row.is_bookmarked) {
-      await supabase.from('reading_progress').delete().eq('id', row.id);
+  const handleRestoreBackup = async (backup: ResetProgressBackup) => {
+    if (!student) return;
+    setRestoringBackupId(backup.backupId);
+    try {
+      const s = backup.snapshot;
+      const res = await fetch('/api/student-progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: student.id,
+          bookId: backup.bookId,
+          currentChapter: s.current_chapter,
+          currentPage: s.current_page,
+          progressPercent: s.progress_percent,
+          readingSeconds: s.reading_seconds ?? 0,
+          pagesTurned: s.pages_turned ?? 0,
+          fastTurnsCount: s.fast_turns_count ?? 0,
+          avgSecondsPerPage: s.avg_seconds_per_page ?? 0,
+          minSecondsPerPage: s.min_seconds_per_page ?? null,
+          isBookmarked: s.is_bookmarked,
+          lastReadAt: s.last_read_at || new Date().toISOString(),
+          bookTitle: backup.bookTitle,
+          notifyStudent: false,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        alert(data?.error || 'Не удалось восстановить прогресс');
+        return;
+      }
+
+      removeResetBackup(backup.backupId);
+      setResetBackups(getResetBackupsForStudent(student.id));
+      await loadStudentData();
+    } catch {
+      alert('Ошибка сети при восстановлении прогресса.');
+    } finally {
+      setRestoringBackupId(null);
     }
+  };
 
-    await loadStudentData();
+  const handleDismissBackup = (backupId: string) => {
+    removeResetBackup(backupId);
+    setResetBackups(getResetBackupsForStudent(studentId));
   };
 
   const progressRows = useMemo(() => {
@@ -762,10 +883,95 @@ export default function AdminStudentProfilePage() {
 
             {/* ВКЛАДКА 1: ЧТЕНИЕ И АНТИЧИТ */}
             {activeTab === 'reading' && (
-              <section className="bg-white dark:bg-[#1C1F26] rounded-[24px] p-4 sm:p-5 border border-gray-200/80 dark:border-gray-800 shadow-sm space-y-3">
+              <section className="bg-white dark:bg-[#1C1F26] rounded-[24px] p-4 sm:p-5 border border-gray-200/80 dark:border-gray-800 shadow-sm space-y-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-gray-100 dark:border-gray-800">
+                  <div>
+                    <h2 className="text-xs sm:text-sm font-extrabold text-gray-900 dark:text-white">
+                      Управление главами, страницами и прогрессом чтения
+                    </h2>
+                    <p className="text-[11px] text-gray-500">
+                      Можно отредактировать любую книгу, снять подозрение античита или восстановить сброшенный прогресс
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setProgressEditorState({ open: true, row: null })}
+                    className="px-3.5 py-2 rounded-xl bg-[#3F51B5] hover:bg-[#303F9F] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Добавить / восстановить книгу</span>
+                  </button>
+                </div>
+
+                {/* Недавно сброшенные книги (быстрый откат в 1 клик) */}
+                {resetBackups.length > 0 && (
+                  <div className="p-3.5 rounded-2xl bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-800/70 space-y-2">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-amber-900 dark:text-amber-200">
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Недавно сброшенные книги — можно вернуть в 1 клик ({resetBackups.length})</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {resetBackups.map((bk) => (
+                        <div
+                          key={bk.backupId}
+                          className="p-2.5 rounded-xl bg-white dark:bg-[#1C1F26] border border-amber-200/70 dark:border-amber-900/50 flex flex-wrap items-center justify-between gap-2 text-xs"
+                        >
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="font-bold text-gray-900 dark:text-white">
+                              {bk.bookTitle}
+                            </div>
+                            <div className="text-[11px] text-gray-500 flex flex-wrap items-center gap-1.5 font-mono">
+                              <span>
+                                Глава {bk.snapshot.current_chapter + 1}, стр. {bk.snapshot.current_page + 1}
+                              </span>
+                              <span>•</span>
+                              <span>{bk.snapshot.progress_percent}%</span>
+                              <span>•</span>
+                              <span>Стр.: {bk.snapshot.pages_turned || 0}</span>
+                              <span>•</span>
+                              <span>{formatReadingDuration(Number(bk.snapshot.reading_seconds || 0))}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={restoringBackupId === bk.backupId}
+                              onClick={() => handleRestoreBackup(bk)}
+                              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold inline-flex items-center gap-1 disabled:opacity-50"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              <span>
+                                {restoringBackupId === bk.backupId ? 'Восстановление...' : 'Восстановить'}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDismissBackup(bk.backupId)}
+                              className="px-2 py-1.5 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-[11px] font-bold"
+                              title="Убрать из списка"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {progressRows.length === 0 ? (
-                  <div className="py-8 text-center text-xs text-gray-400">
-                    Ученик ещё не начал читать книги.
+                  <div className="py-8 text-center space-y-3">
+                    <p className="text-xs text-gray-400">
+                      У ученика пока нет сохранённого прогресса по книгам.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setProgressEditorState({ open: true, row: null })}
+                      className="px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 text-xs font-bold inline-flex items-center gap-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Добавить или восстановить книгу вручную</span>
+                    </button>
                   </div>
                 ) : (
                   progressRows.map((row) => {
@@ -833,6 +1039,15 @@ export default function AdminStudentProfilePage() {
                             >
                               {isUnverifiedFinish ? `Не засчитано (${displayPercent}%)` : `${displayPercent}%`}
                             </span>
+                            <button
+                              type="button"
+                              onClick={() => setProgressEditorState({ open: true, row })}
+                              className="px-2.5 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 text-[10.5px] font-bold inline-flex items-center gap-1"
+                              title="Изменить главу, страницу, %, время, клики или засчитать 100%"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>Редактировать</span>
+                            </button>
                             <button
                               type="button"
                               onClick={() => {
@@ -974,7 +1189,7 @@ export default function AdminStudentProfilePage() {
                         Начислить или списать баллы вручную
                       </h2>
                     </div>
-                    <div className="inline-flex rounded-xl bg-white dark:bg-[#1C1F26] p-0.5 border border-gray-200 dark:border-gray-700">
+                    <div className="inline-flex flex-wrap rounded-xl bg-white dark:bg-[#1C1F26] p-0.5 border border-gray-200 dark:border-gray-700">
                       <button
                         type="button"
                         onClick={() => setAdjustMode('add')}
@@ -999,6 +1214,21 @@ export default function AdminStudentProfilePage() {
                         <MinusCircle className="w-3.5 h-3.5" />
                         <span>Списать</span>
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdjustMode('set');
+                          setTargetPointsInput(String(pointsBreakdown.totalPoints));
+                        }}
+                        className={`px-3 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 transition-colors ${
+                          adjustMode === 'set'
+                            ? 'bg-[#3F51B5] text-white shadow-sm'
+                            : 'text-gray-600 dark:text-gray-300 hover:text-indigo-700'
+                        }`}
+                      >
+                        <Sliders className="w-3.5 h-3.5" />
+                        <span>Установить ровно</span>
+                      </button>
                     </div>
                   </div>
 
@@ -1018,38 +1248,70 @@ export default function AdminStudentProfilePage() {
                   <form onSubmit={handleCreatePointAdjustment} className="space-y-3">
                     <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
                       <div className="sm:col-span-4 space-y-1.5">
-                        <label className="text-[11px] font-bold text-gray-600 dark:text-gray-300 block">
-                          Количество баллов
-                        </label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={10000}
-                          step={1}
-                          required
-                          value={adjustAmount}
-                          onChange={(e) => setAdjustAmount(e.target.value)}
-                          placeholder="Например: 25"
-                          className="w-full px-3.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#1C1F26] text-sm font-mono font-bold outline-none focus:border-indigo-500"
-                        />
-                        <div className="flex flex-wrap gap-1">
-                          {QUICK_POINTS_AMOUNTS.map((val) => (
-                            <button
-                              key={val}
-                              type="button"
-                              onClick={() => setAdjustAmount(String(val))}
-                              className={`px-2 py-0.5 rounded-lg text-[10.5px] font-mono font-bold border transition-colors ${
-                                adjustAmount === String(val)
-                                  ? adjustMode === 'add'
-                                    ? 'bg-emerald-100 dark:bg-emerald-950/60 border-emerald-400 text-emerald-800 dark:text-emerald-200'
-                                    : 'bg-rose-100 dark:bg-rose-950/60 border-rose-400 text-rose-800 dark:text-rose-200'
-                                  : 'bg-white dark:bg-[#1C1F26] border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-indigo-400'
-                              }`}
-                            >
-                              {adjustMode === 'add' ? `+${val}` : `−${val}`}
-                            </button>
-                          ))}
-                        </div>
+                        {adjustMode === 'set' ? (
+                          <>
+                            <label className="text-[11px] font-bold text-gray-600 dark:text-gray-300 block">
+                              Установить итоговые баллы
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={100000}
+                              step={1}
+                              required
+                              value={targetPointsInput}
+                              onChange={(e) => setTargetPointsInput(e.target.value)}
+                              placeholder="Например: 350"
+                              className="w-full px-3.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#1C1F26] text-sm font-mono font-bold outline-none focus:border-indigo-500"
+                            />
+                            <div className="text-[10.5px] font-mono text-gray-500">
+                              Сейчас: <b>{pointsBreakdown.totalPoints} б.</b> → дельта:{' '}
+                              <b className="text-indigo-700 dark:text-indigo-300">
+                                {formatPointsDelta(
+                                  Math.trunc(Number(targetPointsInput) || 0) -
+                                    (pointsBreakdown.honestPagePoints +
+                                      pointsBreakdown.completionPoints +
+                                      pointsBreakdown.bonusPoints)
+                                )}
+                              </b>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <label className="text-[11px] font-bold text-gray-600 dark:text-gray-300 block">
+                              Количество баллов
+                            </label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={10000}
+                              step={1}
+                              required
+                              value={adjustAmount}
+                              onChange={(e) => setAdjustAmount(e.target.value)}
+                              placeholder="Например: 25"
+                              className="w-full px-3.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#1C1F26] text-sm font-mono font-bold outline-none focus:border-indigo-500"
+                            />
+                            <div className="flex flex-wrap gap-1">
+                              {QUICK_POINTS_AMOUNTS.map((val) => (
+                                <button
+                                  key={val}
+                                  type="button"
+                                  onClick={() => setAdjustAmount(String(val))}
+                                  className={`px-2 py-0.5 rounded-lg text-[10.5px] font-mono font-bold border transition-colors ${
+                                    adjustAmount === String(val)
+                                      ? adjustMode === 'add'
+                                        ? 'bg-emerald-100 dark:bg-emerald-950/60 border-emerald-400 text-emerald-800 dark:text-emerald-200'
+                                        : 'bg-rose-100 dark:bg-rose-950/60 border-rose-400 text-rose-800 dark:text-rose-200'
+                                      : 'bg-white dark:bg-[#1C1F26] border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-indigo-400'
+                                  }`}
+                                >
+                                  {adjustMode === 'add' ? `+${val}` : `−${val}`}
+                                </button>
+                              ))}
+                            </div>
+                          </>
+                        )}
                       </div>
 
                       <div className="sm:col-span-8 space-y-1.5">
@@ -1062,7 +1324,7 @@ export default function AdminStudentProfilePage() {
                           maxLength={300}
                           value={adjustReason}
                           onChange={(e) => setAdjustReason(e.target.value)}
-                          placeholder="Например: За победу в читательском конкурсе"
+                          placeholder="Например: Восстановление баллов после сброса"
                           className="w-full px-3.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#1C1F26] text-sm outline-none focus:border-indigo-500"
                         />
                         <div className="flex flex-wrap gap-1">
@@ -1097,20 +1359,26 @@ export default function AdminStudentProfilePage() {
                         className={`px-4 py-2 rounded-xl text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50 ${
                           adjustMode === 'add'
                             ? 'bg-emerald-600 hover:bg-emerald-700'
-                            : 'bg-rose-600 hover:bg-rose-700'
+                            : adjustMode === 'subtract'
+                            ? 'bg-rose-600 hover:bg-rose-700'
+                            : 'bg-[#3F51B5] hover:bg-[#303F9F]'
                         }`}
                       >
                         {adjustMode === 'add' ? (
                           <PlusCircle className="w-3.5 h-3.5" />
-                        ) : (
+                        ) : adjustMode === 'subtract' ? (
                           <MinusCircle className="w-3.5 h-3.5" />
+                        ) : (
+                          <Sliders className="w-3.5 h-3.5" />
                         )}
                         <span>
                           {isSubmittingAdjust
                             ? 'Сохранение...'
                             : adjustMode === 'add'
                             ? `Начислить +${Math.max(0, Math.trunc(Number(adjustAmount) || 0))} б.`
-                            : `Списать −${Math.max(0, Math.trunc(Number(adjustAmount) || 0))} б.`}
+                            : adjustMode === 'subtract'
+                            ? `Списать −${Math.max(0, Math.trunc(Number(adjustAmount) || 0))} б.`
+                            : `Установить ${Math.max(0, Math.trunc(Number(targetPointsInput) || 0))} б.`}
                         </span>
                       </button>
                     </div>
@@ -1439,6 +1707,19 @@ export default function AdminStudentProfilePage() {
           </>
         )}
       </div>
+
+      {progressEditorState.open && student && (
+        <AdminProgressEditorModal
+          studentId={student.id}
+          studentName={student.full_name}
+          studentGradeClass={student.grade_class}
+          books={booksList}
+          existingRows={progressRows}
+          initialRow={progressEditorState.row}
+          onClose={() => setProgressEditorState({ open: false, row: null })}
+          onSaved={loadStudentData}
+        />
+      )}
     </div>
   );
 }

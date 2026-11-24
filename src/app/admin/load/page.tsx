@@ -14,6 +14,8 @@ import {
   Shield, ShieldAlert, ShieldCheck, RefreshCw, MessageSquare, Send, ExternalLink, Filter
 } from 'lucide-react';
 import { AdminsManagerTab } from '@/components/AdminsManagerTab';
+import { AdminProgressEditorModal } from '@/components/AdminProgressEditorModal';
+import { saveResetBackup, type AdminProgressRow } from '@/lib/progressBackups';
 import {
   ADMIN_ROLE_LABELS,
   formatAdminSenderName,
@@ -194,6 +196,10 @@ export default function AdminDashboardPage() {
   const [messageDraft, setMessageDraft] = useState('');
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [messageError, setMessageError] = useState('');
+  const [progressEditorTarget, setProgressEditorTarget] = useState<{
+    student: StudentRow;
+    row: AdminProgressRow | null;
+  } | null>(null);
 
   const fetchBooks = async () => {
     setIsLoadingList(true);
@@ -311,40 +317,60 @@ export default function AdminDashboardPage() {
   };
 
   const handleResetBookProgress = async (
-    studentName: string,
-    row: { id: string; is_bookmarked?: boolean },
+    student: StudentRow,
+    row: StudentRow['reading_progress'][number],
     bookTitle: string
   ) => {
     const ok = window.confirm(
-      `Сбросить прогресс и обнулить время/клики ученика «${studentName}» по книге «${bookTitle}»?\nБаллы и рейтинг пересчитаются сразу.`
+      `Сбросить прогресс и обнулить время/клики ученика «${student.full_name}» по книге «${bookTitle}»?\nСнимок прогресса сохранится в списке отката в профиле ученика — вы сможете вернуть его в 1 клик.`
     );
     if (!ok) return;
 
-    const { error: updateErr } = await supabase
-      .from('reading_progress')
-      .update({
-        current_chapter: 0,
-        current_page: 0,
-        progress_percent: 0,
-        reading_seconds: 0,
-        pages_turned: 0,
-        fast_turns_count: 0,
-        avg_seconds_per_page: 0,
-        min_seconds_per_page: null,
-      })
-      .eq('id', row.id);
+    try {
+      const res = await fetch('/api/student-progress', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          progressId: row.id,
+          studentId: student.id,
+          bookId: row.book_id,
+          keepBookmark: row.is_bookmarked,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        alert(data?.error || 'Не удалось сбросить прогресс');
+        return;
+      }
 
-    if (updateErr) {
-      alert('Не удалось сбросить прогресс: ' + updateErr.message);
-      return;
+      const snapshotRow = data?.previousRow || row;
+      saveResetBackup({
+        studentId: student.id,
+        studentName: student.full_name,
+        bookId: row.book_id,
+        bookTitle,
+        snapshot: {
+          book_id: row.book_id,
+          is_bookmarked: Boolean(snapshotRow.is_bookmarked),
+          current_chapter: Number(snapshotRow.current_chapter || 0),
+          current_page: Number(snapshotRow.current_page || 0),
+          progress_percent: Number(snapshotRow.progress_percent || 0),
+          reading_seconds: Number(snapshotRow.reading_seconds || 0),
+          pages_turned: Number(snapshotRow.pages_turned || 0),
+          fast_turns_count: Number(snapshotRow.fast_turns_count || 0),
+          avg_seconds_per_page: Number(snapshotRow.avg_seconds_per_page || 0),
+          min_seconds_per_page:
+            snapshotRow.min_seconds_per_page !== null && snapshotRow.min_seconds_per_page !== undefined
+              ? Number(snapshotRow.min_seconds_per_page)
+              : null,
+          last_read_at: snapshotRow.last_read_at || null,
+        },
+      });
+
+      await fetchActivity();
+    } catch {
+      alert('Ошибка сети при сбросе прогресса.');
     }
-
-    if (!row.is_bookmarked) {
-      // Если книга не в закладках, пробуем удалить пустую строку (если RLS не даст — уже обнулено)
-      await supabase.from('reading_progress').delete().eq('id', row.id);
-    }
-
-    await fetchActivity();
   };
 
   const resolveAllowedTab = (
@@ -1606,10 +1632,21 @@ export default function AdminDashboardPage() {
                             Всего: {formatReadingDuration(totalReadingSec)}
                           </span>
                           <span>Книг: {st.reading_progress?.length || 0}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setProgressEditorTarget({ student: st, row: null })
+                            }
+                            className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold inline-flex items-center gap-1 shadow-sm transition-colors"
+                            title="Добавить или восстановить прогресс чтения по любой книге"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Книга / прогресс</span>
+                          </button>
                           <Link
                             href={`/admin/students/${st.id}?tab=rewards`}
                             className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-bold inline-flex items-center gap-1 shadow-sm transition-colors"
-                            title="Начислить или списать баллы ученику"
+                            title="Начислить, списать или установить баллы ученику"
                           >
                             <span>⭐ Баллы</span>
                           </Link>
@@ -1725,14 +1762,25 @@ export default function AdminDashboardPage() {
                                     <button
                                       type="button"
                                       onClick={() =>
+                                        setProgressEditorTarget({ student: st, row })
+                                      }
+                                      className="px-2 py-0.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/50 dark:text-emerald-300 text-[10px] font-bold inline-flex items-center gap-1 transition-colors"
+                                      title="Изменить главу, страницу, %, время, клики или засчитать 100%"
+                                    >
+                                      <Edit3 className="w-3 h-3" />
+                                      <span>Изменить</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
                                         handleResetBookProgress(
-                                          st.full_name,
+                                          st,
                                           row,
                                           bookObj?.title || row.book_id
                                         )
                                       }
                                       className="px-2 py-0.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 dark:bg-red-950/40 dark:hover:bg-red-900/50 dark:text-red-300 text-[10px] font-bold inline-flex items-center gap-1 transition-colors"
-                                      title="Сбросить прогресс, время и клики по этой книге (снять накрутку)"
+                                      title="Сбросить прогресс, время и клики по этой книге (снимок сохранится для отката)"
                                     >
                                       <Trash2 className="w-3 h-3" />
                                       <span>Сбросить</span>
@@ -2134,6 +2182,24 @@ export default function AdminDashboardPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* МОДАЛКА РЕДАКТИРОВАНИЯ / ВОССТАНОВЛЕНИЯ ПРОГРЕССА УЧЕНИКА */}
+      {progressEditorTarget && (
+        <AdminProgressEditorModal
+          studentId={progressEditorTarget.student.id}
+          studentName={progressEditorTarget.student.full_name}
+          studentGradeClass={progressEditorTarget.student.grade_class}
+          books={booksList.map((b) => ({
+            id: b.id,
+            title: b.title,
+            author: b.author,
+          }))}
+          existingRows={progressEditorTarget.student.reading_progress || []}
+          initialRow={progressEditorTarget.row}
+          onClose={() => setProgressEditorTarget(null)}
+          onSaved={fetchActivity}
+        />
       )}
 
       {/* МОДАЛКА УДАЛЕНИЯ КНИГИ */}

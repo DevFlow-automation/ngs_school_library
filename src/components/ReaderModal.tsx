@@ -32,8 +32,8 @@ import {
   getAgeGroup,
   getUnlockableThemesForAgeGroup,
 } from '@/lib/gamification';
+import { paginateChapterParagraphs } from '@/lib/bookPagination';
 
-const TARGET_CHARS_PER_PAGE = 1100;
 const AUTO_FLUSH_MS = 15000;
 const CHECK_MIN_PAGES = 10;
 const CHECK_MAX_PAGES = 14;
@@ -277,32 +277,10 @@ export const ReaderModal: React.FC = () => {
     return book.chapters[activeChapterIndex] || book.chapters[0];
   }, [book, activeChapterIndex]);
 
-  const pages: string[][] = useMemo(() => {
-    const rawParas = currentChapter.paragraphs || [];
-    if (rawParas.length === 0) return [['Текст главы пуст.']];
-
-    const resultPages: string[][] = [];
-    let currentChunk: string[] = [];
-    let currentChars = 0;
-
-    for (const p of rawParas) {
-      const pLen = p.length;
-      if (currentChars + pLen > TARGET_CHARS_PER_PAGE && currentChunk.length > 0) {
-        resultPages.push(currentChunk);
-        currentChunk = [p];
-        currentChars = pLen;
-      } else {
-        currentChunk.push(p);
-        currentChars += pLen;
-      }
-    }
-
-    if (currentChunk.length > 0) {
-      resultPages.push(currentChunk);
-    }
-
-    return resultPages;
-  }, [currentChapter]);
+  const pages: string[][] = useMemo(
+    () => paginateChapterParagraphs(currentChapter.paragraphs),
+    [currentChapter]
+  );
 
   const totalChapters = book?.chapters?.length || 0;
   const totalPages = pages.length;
