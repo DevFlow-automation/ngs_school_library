@@ -10,6 +10,11 @@ export interface StudentProfile {
   gradeClass: string;
 }
 
+export interface BookPositionBaseline {
+  chapterIndex: number;
+  pageIndex: number;
+}
+
 export interface BookProgress {
   chapterIndex: number;
   pageIndex: number;
@@ -21,12 +26,18 @@ export interface BookProgress {
   minSecondsPerPage?: number | null;
   totalTurnSeconds?: number;
   completionRejectedReason?: string | null;
+  /** Ключи страниц ("глава:страница"), за которые уже начислены честные баллы */
+  creditedPages?: string[];
+  /** Базовая позиция, синхронизированная с БД (защита от повторного фарма при смене устройства/инкогнито) */
+  syncedBaseline?: BookPositionBaseline | null;
 }
 
 export interface ReadingMetricDelta {
   deltaSeconds?: number;
   pageTurnElapsedSec?: number;
   isFastTurn?: boolean;
+  /** Ключ страницы ("глава:страница") для защиты от повторного зачёта туда-сюда */
+  creditedPageKey?: string;
   skipSync?: boolean;
 }
 
@@ -206,6 +217,7 @@ export const useReadingStore = create<ReadingState>()(
           existing = created;
         }
 
+        const prevStudentId = get().student?.id;
         set({
           student: {
             id: existing.id,
@@ -213,6 +225,9 @@ export const useReadingStore = create<ReadingState>()(
             gradeClass: existing.grade_class,
           },
           isLoginModalOpen: false,
+          ...(prevStudentId && prevStudentId !== existing.id
+            ? { readingProgress: {}, myShelfIds: [] }
+            : {}),
         });
 
         await get().syncFromSupabase();
@@ -263,6 +278,7 @@ export const useReadingStore = create<ReadingState>()(
           .eq('student_id', student.id);
 
         if (data) {
+          const prevProgress = get().readingProgress;
           const shelf: string[] = [];
           const progressMap: Record<string, BookProgress> = {};
           data.forEach((row) => {
@@ -275,17 +291,32 @@ export const useReadingStore = create<ReadingState>()(
               row.min_seconds_per_page !== null && row.min_seconds_per_page !== undefined
                 ? Number(row.min_seconds_per_page)
                 : null;
+            const prevLocal = prevProgress[row.book_id];
+            const creditedPages = prevLocal?.creditedPages;
+            const rowChapter = row.current_chapter || 0;
+            const rowPage = row.current_page || 0;
+
+            let syncedBaseline = prevLocal?.syncedBaseline ?? null;
+            if (
+              !syncedBaseline &&
+              (!creditedPages || creditedPages.length === 0) &&
+              pagesTurned >= 3 &&
+              avgSecondsPerPage >= 10 &&
+              (rowChapter > 0 || rowPage > 0)
+            ) {
+              syncedBaseline = { chapterIndex: rowChapter, pageIndex: rowPage };
+            }
 
             if (
               row.progress_percent > 0 ||
-              row.current_chapter > 0 ||
-              row.current_page > 0 ||
+              rowChapter > 0 ||
+              rowPage > 0 ||
               readingSeconds > 0 ||
               pagesTurned > 0
             ) {
               progressMap[row.book_id] = {
-                chapterIndex: row.current_chapter || 0,
-                pageIndex: row.current_page || 0,
+                chapterIndex: rowChapter,
+                pageIndex: rowPage,
                 percent: row.progress_percent || 0,
                 readingSeconds,
                 pagesTurned,
@@ -293,6 +324,8 @@ export const useReadingStore = create<ReadingState>()(
                 avgSecondsPerPage,
                 minSecondsPerPage,
                 totalTurnSeconds: avgSecondsPerPage * pagesTurned,
+                creditedPages,
+                syncedBaseline,
               };
             }
           });
@@ -385,6 +418,8 @@ export const useReadingStore = create<ReadingState>()(
           minSecondsPerPage,
           totalTurnSeconds: prev?.totalTurnSeconds || 0,
           completionRejectedReason,
+          creditedPages: prev?.creditedPages,
+          syncedBaseline: prev?.syncedBaseline ?? null,
         };
 
         set({
@@ -434,23 +469,32 @@ export const useReadingStore = create<ReadingState>()(
         let nextTotalTurnSeconds = prev.totalTurnSeconds ?? (prev.avgSecondsPerPage || 0) * nextPagesTurned;
         let nextAvg = prev.avgSecondsPerPage || 0;
         let nextMin = prev.minSecondsPerPage ?? null;
+        let nextCreditedPages = prev.creditedPages;
+        let recordedTurn = false;
 
         if (typeof delta.pageTurnElapsedSec === 'number' && Number.isFinite(delta.pageTurnElapsedSec)) {
-          const rawTurnSec = Math.max(0.1, Math.round(delta.pageTurnElapsedSec * 10) / 10);
-          const cappedForAvg = Math.min(rawTurnSec, MAX_TURN_DURATION_FOR_AVG_SEC);
-          nextPagesTurned += 1;
-          if (delta.isFastTurn) {
-            nextFastTurns += 1;
+          const isDuplicateCreditedPage =
+            Boolean(delta.creditedPageKey) &&
+            Array.isArray(prev.creditedPages) &&
+            prev.creditedPages.includes(delta.creditedPageKey!);
+
+          if (!isDuplicateCreditedPage) {
+            const rawTurnSec = Math.max(0.1, Math.round(delta.pageTurnElapsedSec * 10) / 10);
+            const cappedForAvg = Math.min(rawTurnSec, MAX_TURN_DURATION_FOR_AVG_SEC);
+            nextPagesTurned += 1;
+            if (delta.isFastTurn) {
+              nextFastTurns += 1;
+            } else if (delta.creditedPageKey) {
+              nextCreditedPages = [...(prev.creditedPages || []), delta.creditedPageKey];
+            }
+            nextTotalTurnSeconds += cappedForAvg;
+            nextAvg = Math.round((nextTotalTurnSeconds / nextPagesTurned) * 10) / 10;
+            nextMin = nextMin === null ? rawTurnSec : Math.min(nextMin, rawTurnSec);
+            recordedTurn = true;
           }
-          nextTotalTurnSeconds += cappedForAvg;
-          nextAvg = Math.round((nextTotalTurnSeconds / nextPagesTurned) * 10) / 10;
-          nextMin = nextMin === null ? rawTurnSec : Math.min(nextMin, rawTurnSec);
         }
 
-        if (
-          addSeconds === 0 &&
-          typeof delta.pageTurnElapsedSec !== 'number'
-        ) {
+        if (addSeconds === 0 && !recordedTurn) {
           return;
         }
 
@@ -462,6 +506,7 @@ export const useReadingStore = create<ReadingState>()(
           avgSecondsPerPage: nextAvg,
           minSecondsPerPage: nextMin,
           totalTurnSeconds: nextTotalTurnSeconds,
+          creditedPages: nextCreditedPages,
         };
 
         set({

@@ -6,10 +6,13 @@ import { fetchBookWithChapters, getCachedBookById } from '@/lib/booksService';
 import { 
   ArrowLeft, Sliders, Bookmark, Search, 
   ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X, Clock, Lock, AlertTriangle,
-  Loader2, RefreshCw, BookOpen
+  Loader2, RefreshCw, BookOpen, Pause
 } from 'lucide-react';
 import { Book, ReaderTheme } from '@/types/book';
 import {
+  AFK_PAUSE_TIMEOUT_MS,
+  MAX_ACTIVE_MS_PER_PAGE,
+  MAX_ACTIVE_SECONDS_PER_PAGE,
   evaluateBookCompletion,
   evaluateReadingPace,
   formatReadingTimer,
@@ -28,6 +31,8 @@ import {
 
 const TARGET_CHARS_PER_PAGE = 1100;
 const AUTO_FLUSH_MS = 15000;
+
+type TimerPauseReason = 'none' | 'blur' | 'afk' | 'page_limit';
 
 interface LivePaceWarning {
   severity: 'warning' | 'danger';
@@ -69,15 +74,19 @@ export const ReaderModal: React.FC = () => {
   const [readyBookId, setReadyBookId] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [liveWarning, setLiveWarning] = useState<LivePaceWarning | null>(null);
+  const [timerPauseReason, setTimerPauseReason] = useState<TimerPauseReason>('none');
   const textScrollRef = useRef<HTMLDivElement>(null);
 
-  // Рефы для точного подсчёта активного времени чтения, скорости перелистывания и авто-предупреждений
+  // Рефы для точного подсчёта активного времени чтения, AFK-паузы, лимита на страницу и античита
   const unsavedReadingMsRef = useRef(0);
   const pageActiveMsRef = useRef(0);
   const chapterActiveMsRef = useRef(0);
   const activeSinceRef = useRef<number | null>(null);
+  const lastActivityAtRef = useRef<number>(0);
+  const pageLimitReachedRef = useRef(false);
   const fastPageStreakRef = useRef(0);
   const fastChapterStreakRef = useRef(0);
+  const repeatTurnStreakRef = useRef(0);
   const chapterSkipCountRef = useRef(0);
   const maxVisitedChapterRef = useRef(0);
   const warningHideTimerRef = useRef<number | null>(null);
@@ -105,18 +114,34 @@ export const ReaderModal: React.FC = () => {
   const captureActiveSlice = useCallback((keepRunning: boolean) => {
     const now = performance.now();
     if (activeSinceRef.current !== null) {
-      const elapsed = Math.max(0, now - activeSinceRef.current);
-      unsavedReadingMsRef.current += elapsed;
-      pageActiveMsRef.current += elapsed;
-      chapterActiveMsRef.current += elapsed;
+      const afkCapEnd =
+        lastActivityAtRef.current > 0
+          ? Math.min(now, lastActivityAtRef.current + AFK_PAUSE_TIMEOUT_MS)
+          : now;
+      const rawElapsed = Math.max(0, afkCapEnd - activeSinceRef.current);
+      const remainingPageAllowance = Math.max(0, MAX_ACTIVE_MS_PER_PAGE - pageActiveMsRef.current);
+      const credited = Math.min(rawElapsed, remainingPageAllowance);
+
+      unsavedReadingMsRef.current += credited;
+      pageActiveMsRef.current += credited;
+      chapterActiveMsRef.current += credited;
+
+      if (pageActiveMsRef.current >= MAX_ACTIVE_MS_PER_PAGE) {
+        pageLimitReachedRef.current = true;
+      }
     }
-    activeSinceRef.current = keepRunning ? now : null;
+    activeSinceRef.current = keepRunning && !pageLimitReachedRef.current ? now : null;
   }, []);
 
   const flushReadingMetrics = useCallback(
     (
       bookId: string,
-      opts?: { pageTurnElapsedSec?: number; isFastTurn?: boolean; skipSync?: boolean }
+      opts?: {
+        pageTurnElapsedSec?: number;
+        isFastTurn?: boolean;
+        creditedPageKey?: string;
+        skipSync?: boolean;
+      }
     ) => {
       const isRunning = activeSinceRef.current !== null;
       captureActiveSlice(isRunning);
@@ -132,6 +157,7 @@ export const ReaderModal: React.FC = () => {
           deltaSeconds: wholeSeconds,
           pageTurnElapsedSec: opts?.pageTurnElapsedSec,
           isFastTurn: opts?.isFastTurn,
+          creditedPageKey: opts?.creditedPageKey,
           skipSync: opts?.skipSync,
         });
       }
@@ -250,8 +276,11 @@ export const ReaderModal: React.FC = () => {
       setShowMobileToc(false);
       fastPageStreakRef.current = 0;
       fastChapterStreakRef.current = 0;
+      repeatTurnStreakRef.current = 0;
       chapterSkipCountRef.current = 0;
       chapterActiveMsRef.current = 0;
+      pageLimitReachedRef.current = false;
+      setTimerPauseReason('none');
       maxVisitedChapterRef.current = Math.max(savedProgress?.chapterIndex || 0, activeChapterIndex);
       dismissLiveWarning();
       setReadyBookId(activeBookId);
@@ -270,13 +299,16 @@ export const ReaderModal: React.FC = () => {
     }
   }, [activeBookId, readyBookId, book, activeChapterIndex, currentPage, totalChapters, totalPages]);
 
-  // Активный таймер чтения: пауза при скрытии вкладки/потере фокуса, автосохранение каждые 15 сек и при закрытии
+  // Активный таймер чтения: пауза при скрытии вкладки, AFK-пауза (2 мин) и лимит 3 мин/страница
   useEffect(() => {
     if (!activeBookId || readyBookId !== activeBookId) return;
 
+    const startNow = performance.now();
     unsavedReadingMsRef.current = 0;
     pageActiveMsRef.current = 0;
     chapterActiveMsRef.current = 0;
+    lastActivityAtRef.current = startNow;
+    pageLimitReachedRef.current = false;
     setLiveExtraSec(0);
 
     const isWindowActive = () =>
@@ -284,42 +316,115 @@ export const ReaderModal: React.FC = () => {
       document.visibilityState === 'visible' &&
       (typeof document.hasFocus !== 'function' || document.hasFocus());
 
-    activeSinceRef.current = isWindowActive() ? performance.now() : null;
+    const initiallyActive = isWindowActive();
+    activeSinceRef.current = initiallyActive ? startNow : null;
+    setTimerPauseReason(initiallyActive ? 'none' : 'blur');
 
-    const pauseTimer = () => {
+    const pauseTimer = (reason: TimerPauseReason) => {
       captureActiveSlice(false);
+      setTimerPauseReason(pageLimitReachedRef.current ? 'page_limit' : reason);
     };
 
     const resumeTimer = () => {
-      if (activeSinceRef.current === null && isWindowActive()) {
-        activeSinceRef.current = performance.now();
+      const now = performance.now();
+      lastActivityAtRef.current = now;
+      if (!isWindowActive()) {
+        setTimerPauseReason('blur');
+        return;
+      }
+      if (pageLimitReachedRef.current) {
+        setTimerPauseReason('page_limit');
+        return;
+      }
+      if (activeSinceRef.current === null) {
+        activeSinceRef.current = now;
+      }
+      setTimerPauseReason('none');
+    };
+
+    const handleUserActivity = (event: Event) => {
+      const now = performance.now();
+      if (
+        event.type === 'mousemove' &&
+        activeSinceRef.current !== null &&
+        now - lastActivityAtRef.current < 1000
+      ) {
+        return;
+      }
+
+      // Если между действиями был длительный простой (например, сон ноутбука), не засчитываем его
+      if (activeSinceRef.current !== null && now - lastActivityAtRef.current >= AFK_PAUSE_TIMEOUT_MS) {
+        captureActiveSlice(false);
+      }
+
+      lastActivityAtRef.current = now;
+
+      if (activeSinceRef.current === null && isWindowActive() && !pageLimitReachedRef.current) {
+        activeSinceRef.current = now;
+        setTimerPauseReason('none');
       }
     };
+
+    const handleBlur = () => pauseTimer('blur');
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         resumeTimer();
       } else {
-        pauseTimer();
+        pauseTimer('blur');
         flushReadingMetrics(activeBookId);
       }
     };
 
     const handlePageHide = () => {
-      pauseTimer();
+      pauseTimer('blur');
       flushReadingMetrics(activeBookId);
     };
 
+    const activityEvents: (keyof WindowEventMap)[] = [
+      'pointerdown',
+      'mousemove',
+      'keydown',
+      'wheel',
+      'touchstart',
+      'scroll',
+    ];
+    activityEvents.forEach((evt) =>
+      window.addEventListener(evt, handleUserActivity, { capture: true, passive: true })
+    );
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('blur', pauseTimer);
+    window.addEventListener('blur', handleBlur);
     window.addEventListener('focus', resumeTimer);
     window.addEventListener('pagehide', handlePageHide);
 
     const intervalId = window.setInterval(() => {
       const now = performance.now();
-      const liveMs = activeSinceRef.current !== null ? Math.max(0, now - activeSinceRef.current) : 0;
-      const totalUnsavedMs = unsavedReadingMsRef.current + liveMs;
+      if (activeSinceRef.current === null) {
+        return;
+      }
 
+      const afkCapEnd = Math.min(now, lastActivityAtRef.current + AFK_PAUSE_TIMEOUT_MS);
+      const rawLiveMs = Math.max(0, afkCapEnd - activeSinceRef.current);
+      const remainingPageAllowance = Math.max(0, MAX_ACTIVE_MS_PER_PAGE - pageActiveMsRef.current);
+      const liveMs = Math.min(rawLiveMs, remainingPageAllowance);
+
+      if (pageActiveMsRef.current + liveMs >= MAX_ACTIVE_MS_PER_PAGE) {
+        captureActiveSlice(false);
+        pageLimitReachedRef.current = true;
+        setTimerPauseReason('page_limit');
+        flushReadingMetrics(activeBookId);
+        return;
+      }
+
+      if (now - lastActivityAtRef.current >= AFK_PAUSE_TIMEOUT_MS) {
+        captureActiveSlice(false);
+        setTimerPauseReason('afk');
+        flushReadingMetrics(activeBookId);
+        return;
+      }
+
+      const totalUnsavedMs = unsavedReadingMsRef.current + liveMs;
       if (totalUnsavedMs >= AUTO_FLUSH_MS) {
         flushReadingMetrics(activeBookId);
       } else {
@@ -329,8 +434,11 @@ export const ReaderModal: React.FC = () => {
 
     return () => {
       window.clearInterval(intervalId);
+      activityEvents.forEach((evt) =>
+        window.removeEventListener(evt, handleUserActivity, { capture: true })
+      );
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('blur', pauseTimer);
+      window.removeEventListener('blur', handleBlur);
       window.removeEventListener('focus', resumeTimer);
       window.removeEventListener('pagehide', handlePageHide);
       flushReadingMetrics(activeBookId);
@@ -505,6 +613,43 @@ export const ReaderModal: React.FC = () => {
         String(ch.index + 1).includes(chapterSearch)
     );
 
+  const isPageAlreadyCredited = (bookId: string, chapterIdx: number, pageIdx: number): boolean => {
+    const progress = useReadingStore.getState().readingProgress[bookId];
+    const pageKey = `${chapterIdx}:${pageIdx}`;
+    if (progress?.creditedPages?.includes(pageKey)) {
+      return true;
+    }
+    const baseline = progress?.syncedBaseline;
+    if (
+      baseline &&
+      (chapterIdx < baseline.chapterIndex ||
+        (chapterIdx === baseline.chapterIndex && pageIdx < baseline.pageIndex))
+    ) {
+      return true;
+    }
+    return false;
+  };
+
+  const resetPageTimerForNavigation = () => {
+    const now = performance.now();
+    pageActiveMsRef.current = 0;
+    pageLimitReachedRef.current = false;
+    lastActivityAtRef.current = now;
+
+    const windowActive =
+      typeof document !== 'undefined' &&
+      document.visibilityState === 'visible' &&
+      (typeof document.hasFocus !== 'function' || document.hasFocus());
+
+    if (windowActive) {
+      activeSinceRef.current = now;
+      setTimerPauseReason('none');
+    } else {
+      activeSinceRef.current = null;
+      setTimerPauseReason('blur');
+    }
+  };
+
   const measureCurrentPageTurn = () => {
     const isRunning = activeSinceRef.current !== null;
     captureActiveSlice(isRunning);
@@ -512,6 +657,7 @@ export const ReaderModal: React.FC = () => {
     const pageChars = currentParagraphs.join(' ').length;
     const fastThresholdSec = getFastTurnThresholdSeconds(pageChars);
     pageActiveMsRef.current = 0;
+    pageLimitReachedRef.current = false;
     return { elapsedSec, isFastTurn: elapsedSec < fastThresholdSec };
   };
 
@@ -609,8 +755,8 @@ export const ReaderModal: React.FC = () => {
     const chapterElapsedSec = Math.max(0.1, Math.round((chapterActiveMsRef.current / 1000) * 10) / 10);
     const chapterChars = (currentChapter.paragraphs || []).join(' ').length;
     const fastChapterThreshold = getFastChapterThresholdSeconds(chapterChars);
-    pageActiveMsRef.current = 0;
     chapterActiveMsRef.current = 0;
+    resetPageTimerForNavigation();
 
     if (idx > activeChapterIndex) {
       const baselineChapter = Math.max(activeChapterIndex, maxVisitedChapterRef.current);
@@ -687,22 +833,47 @@ export const ReaderModal: React.FC = () => {
 
   const handlePrevPage = () => {
     flushReadingMetrics(book.id, { skipSync: true });
-    pageActiveMsRef.current = 0;
+    resetPageTimerForNavigation();
     setCurrentPage((prev) => Math.max(0, prev - 1));
   };
 
   const handleNextPage = () => {
+    const pageKey = `${activeChapterIndex}:${currentPage}`;
+    const alreadyCredited = isPageAlreadyCredited(book.id, activeChapterIndex, currentPage);
     const { elapsedSec, isFastTurn } = measureCurrentPageTurn();
-    flushReadingMetrics(book.id, {
-      pageTurnElapsedSec: elapsedSec,
-      isFastTurn,
-      skipSync: true,
-    });
-    evaluateFastPageWarning(isFastTurn);
+
+    if (alreadyCredited) {
+      flushReadingMetrics(book.id, { skipSync: true });
+      repeatTurnStreakRef.current += 1;
+      if (repeatTurnStreakRef.current >= 2) {
+        showLiveWarning(
+          {
+            severity: 'warning',
+            title: 'Страница уже засчитана',
+            message:
+              'Повторное перелистывание страниц туда-сюда не приносит дополнительных баллов. Переходите к новым страницам книги.',
+          },
+          7000
+        );
+      }
+    } else {
+      repeatTurnStreakRef.current = 0;
+      flushReadingMetrics(book.id, {
+        pageTurnElapsedSec: elapsedSec,
+        isFastTurn,
+        creditedPageKey: pageKey,
+        skipSync: true,
+      });
+      evaluateFastPageWarning(isFastTurn);
+    }
+
+    resetPageTimerForNavigation();
     setCurrentPage((prev) => Math.min(totalPages - 1, prev + 1));
   };
 
   const handleNextChapter = () => {
+    const pageKey = `${activeChapterIndex}:${currentPage}`;
+    const alreadyCredited = isPageAlreadyCredited(book.id, activeChapterIndex, currentPage);
     const { elapsedSec, isFastTurn } = measureCurrentPageTurn();
     const chapterElapsedSec = Math.max(0.1, Math.round((chapterActiveMsRef.current / 1000) * 10) / 10);
     const chapterChars = (currentChapter.paragraphs || []).join(' ').length;
@@ -710,58 +881,77 @@ export const ReaderModal: React.FC = () => {
     const isFastChapter = chapterElapsedSec < fastChapterThreshold;
     chapterActiveMsRef.current = 0;
 
-    flushReadingMetrics(book.id, {
-      pageTurnElapsedSec: elapsedSec,
-      isFastTurn,
-      skipSync: true,
-    });
-
-    maxVisitedChapterRef.current = Math.max(maxVisitedChapterRef.current, activeChapterIndex + 1);
-
-    if (isFastChapter) {
-      fastChapterStreakRef.current += 1;
-    } else {
-      fastChapterStreakRef.current = 0;
-    }
-
-    if (fastChapterStreakRef.current >= 3) {
-      if (isFastTurn) {
-        fastPageStreakRef.current += 1;
-      } else {
-        fastPageStreakRef.current = 0;
+    if (alreadyCredited) {
+      flushReadingMetrics(book.id, { skipSync: true });
+      repeatTurnStreakRef.current += 1;
+      if (repeatTurnStreakRef.current >= 2) {
+        showLiveWarning(
+          {
+            severity: 'warning',
+            title: 'Страница уже засчитана',
+            message:
+              'Повторное перелистывание уже прочитанных страниц не приносит дополнительных баллов. Продолжайте читать новые главы.',
+          },
+          7000
+        );
       }
-      showLiveWarning(
-        {
-          severity: 'danger',
-          title: 'Слишком быстрое перелистывание глав',
-          message: `Ты пролистал(а) ${fastChapterStreakRef.current} главы подряд слишком быстро. Пожалуйста, читай главы целиком и в спокойном темпе.`,
-        },
-        12000
-      );
-      dispatchProfileAutoWarning({
-        reason: 'fast_chapters',
-        fastStreak: fastChapterStreakRef.current,
-        readingSeconds: useReadingStore.getState().readingProgress[book.id]?.readingSeconds || 0,
+    } else {
+      repeatTurnStreakRef.current = 0;
+      flushReadingMetrics(book.id, {
+        pageTurnElapsedSec: elapsedSec,
+        isFastTurn,
+        creditedPageKey: pageKey,
+        skipSync: true,
       });
-    } else if (fastChapterStreakRef.current === 2) {
-      if (isFastTurn) {
-        fastPageStreakRef.current += 1;
+
+      maxVisitedChapterRef.current = Math.max(maxVisitedChapterRef.current, activeChapterIndex + 1);
+
+      if (isFastChapter) {
+        fastChapterStreakRef.current += 1;
       } else {
-        fastPageStreakRef.current = 0;
+        fastChapterStreakRef.current = 0;
       }
-      showLiveWarning(
-        {
-          severity: 'warning',
-          title: 'Слишком быстрый переход между главами',
-          message:
-            'Ты переходишь к следующим главам слишком быстро. Постарайся внимательно дочитывать каждую главу.',
-        },
-        8000
-      );
-    } else {
-      evaluateFastPageWarning(isFastTurn);
+
+      if (fastChapterStreakRef.current >= 3) {
+        if (isFastTurn) {
+          fastPageStreakRef.current += 1;
+        } else {
+          fastPageStreakRef.current = 0;
+        }
+        showLiveWarning(
+          {
+            severity: 'danger',
+            title: 'Слишком быстрое перелистывание глав',
+            message: `Ты пролистал(а) ${fastChapterStreakRef.current} главы подряд слишком быстро. Пожалуйста, читай главы целиком и в спокойном темпе.`,
+          },
+          12000
+        );
+        dispatchProfileAutoWarning({
+          reason: 'fast_chapters',
+          fastStreak: fastChapterStreakRef.current,
+          readingSeconds: useReadingStore.getState().readingProgress[book.id]?.readingSeconds || 0,
+        });
+      } else if (fastChapterStreakRef.current === 2) {
+        if (isFastTurn) {
+          fastPageStreakRef.current += 1;
+        } else {
+          fastPageStreakRef.current = 0;
+        }
+        showLiveWarning(
+          {
+            severity: 'warning',
+            title: 'Слишком быстрый переход между главами',
+            message:
+              'Ты переходишь к следующим главам слишком быстро. Постарайся внимательно дочитывать каждую главу.',
+          },
+          8000
+        );
+      } else {
+        evaluateFastPageWarning(isFastTurn);
+      }
     }
 
+    resetPageTimerForNavigation();
     setChapterIndex(activeChapterIndex + 1);
     setCurrentPage(0);
     setShowMobileToc(false);
@@ -797,11 +987,31 @@ export const ReaderModal: React.FC = () => {
 
         <div className="flex items-center gap-1.5 shrink-0">
           <div
-            className="px-2.5 py-1 rounded-full bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 text-[11px] font-mono font-bold flex items-center gap-1.5"
-            title="Время чтения этой книги (считается только при открытой вкладке)"
+            className={`px-2.5 py-1 rounded-full text-[11px] font-mono font-bold flex items-center gap-1.5 transition-colors ${
+              timerPauseReason === 'afk' || timerPauseReason === 'page_limit'
+                ? 'bg-amber-500/15 text-amber-800 dark:text-amber-300'
+                : 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300'
+            }`}
+            title={
+              timerPauseReason === 'afk'
+                ? 'Таймер на паузе из-за бездействия (2 мин). Прокрутите текст или перелистните страницу.'
+                : timerPauseReason === 'page_limit'
+                ? `Достигнут лимит ${Math.round(MAX_ACTIVE_SECONDS_PER_PAGE / 60)} мин на одну страницу. Перейдите на следующую страницу, чтобы таймер продолжился.`
+                : 'Активное время чтения (пауза при бездействии 2 мин и лимит 3 мин/стр)'
+            }
           >
-            <Clock className="w-3.5 h-3.5 shrink-0" />
+            {timerPauseReason === 'afk' || timerPauseReason === 'page_limit' ? (
+              <Pause className="w-3.5 h-3.5 shrink-0" />
+            ) : (
+              <Clock className="w-3.5 h-3.5 shrink-0" />
+            )}
             <span>{formatReadingTimer(totalDisplaySeconds)}</span>
+            {timerPauseReason === 'afk' && (
+              <span className="hidden sm:inline font-sans text-[10px] font-extrabold">· Пауза</span>
+            )}
+            {timerPauseReason === 'page_limit' && (
+              <span className="hidden sm:inline font-sans text-[10px] font-extrabold">· Лимит 3м/стр</span>
+            )}
           </div>
 
           <button 

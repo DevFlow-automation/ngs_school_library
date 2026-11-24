@@ -15,6 +15,7 @@ import {
 } from '@/lib/readingMetrics';
 import { isAutoWarningMessage } from '@/lib/autoWarnings';
 import {
+  POINTS_PER_HONEST_PAGE,
   calculateStudentPoints,
   getAgeGroup,
   getAgeGroupMeta,
@@ -735,14 +736,17 @@ export default function AdminStudentProfilePage() {
                   <span className="px-3 py-1.5 rounded-xl bg-amber-100 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200 font-mono font-extrabold">
                     ⭐ Итого: {pointsBreakdown.totalPoints} б.
                   </span>
-                  <span className="px-2.5 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 font-bold">
-                    ⏱ За время: +{pointsBreakdown.timePoints} б.
-                  </span>
                   <span className="px-2.5 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 font-bold">
-                    📖 Честные страницы: +{pointsBreakdown.honestPagePoints} б. ({pointsBreakdown.honestPagesCount})
+                    📖 Честные страницы: +{pointsBreakdown.honestPagePoints} б. ({pointsBreakdown.honestPagesCount} × {POINTS_PER_HONEST_PAGE} б.)
                   </span>
                   <span className="px-2.5 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 font-bold">
                     🏆 Прочитанные книги: +{pointsBreakdown.completionPoints} б. ({pointsBreakdown.honestCompletedBooks})
+                  </span>
+                  <span
+                    className="px-2.5 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 font-bold"
+                    title="Время используется только как античит-проверка темпа и не даёт отдельных баллов за простой вкладки"
+                  >
+                    ⏱ Время (античит): {formatReadingDuration(pointsBreakdown.totalReadingSeconds)}
                   </span>
                   {pointsBreakdown.fastPagesIgnored > 0 && (
                     <span className="px-2.5 py-1.5 rounded-xl bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 font-bold">

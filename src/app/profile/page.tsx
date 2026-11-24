@@ -13,6 +13,7 @@ import { fetchBooksMetadata, getCachedBooks } from '@/lib/booksService';
 import { evaluateBookCompletion, formatReadingDuration } from '@/lib/readingMetrics';
 import { isAutoWarningMessage } from '@/lib/autoWarnings';
 import {
+  POINTS_PER_HONEST_PAGE,
   calculateStudentPoints,
   getAgeGroup,
   getAgeGroupMeta,
@@ -864,14 +865,11 @@ export default function StudentProfilePage() {
               <section className="bg-white dark:bg-[#1C1F26] rounded-[24px] p-4 sm:p-5 border border-[#E0E2EC]/70 dark:border-[#2F323D] shadow-sm space-y-3.5">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                    <span className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 font-bold">
-                      ⏱ Время: +{pointsBreakdown.timePoints} б.
-                    </span>
                     <span className="px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 font-bold">
-                      📖 Страницы: +{pointsBreakdown.honestPagePoints} б.
+                      📖 Страницы: +{pointsBreakdown.honestPagePoints} б. ({pointsBreakdown.honestPagesCount})
                     </span>
                     <span className="px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 font-bold">
-                      🏆 Книги: +{pointsBreakdown.completionPoints} б.
+                      🏆 Книги: +{pointsBreakdown.completionPoints} б. ({pointsBreakdown.honestCompletedBooks})
                     </span>
                   </div>
 
@@ -903,7 +901,7 @@ export default function StudentProfilePage() {
                 <div className="flex items-center gap-1.5 text-[11px] text-[#74777F] dark:text-[#90939C]">
                   <Info className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
                   <span>
-                    +2 б./мин чтения, +1 б./честная стр., +{pointsBreakdown.completionBonusPerBook} б./книга ({ageGroupMeta.label}). Быстрое пролистывание не засчитывается.
+                    +{POINTS_PER_HONEST_PAGE} б./честная стр., +{pointsBreakdown.completionBonusPerBook} б./книга ({ageGroupMeta.label}). Быстрое пролистывание, повторное листание туда-сюда и простой вкладки не приносят баллов.
                   </span>
                 </div>
 

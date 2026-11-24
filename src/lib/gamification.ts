@@ -448,9 +448,13 @@ export function getFrameRewardById(frameId?: string | null): UnlockableReward | 
   return null;
 }
 
+export const POINTS_PER_HONEST_PAGE = 3;
+
 /**
- * Честный расчёт баллов на основе реального времени чтения и скорости перелистывания.
- * Быстрые клики (< порога) и книги с подозрением на пролистывание НЕ дают бонусных баллов.
+ * Честный расчёт баллов на основе реального прогресса чтения (Вариант А).
+ * Само по себе время на открытой вкладке баллов НЕ даёт (защита от AFK-накрутки) —
+ * оно используется только для проверки темпа перелистывания и честного дочитывания книги.
+ * Быстрые клики (< порога), повторное листание туда-сюда и подозрительные книги не дают баллов.
  */
 export function calculateStudentPoints(
   entries: ReadingMetricsSnapshot[],
@@ -484,15 +488,15 @@ export function calculateStudentPoints(
     }
   }
 
-  // +2 балла за каждую полную минуту активного чтения
-  const timePoints = Math.floor(totalReadingSeconds / 60) * 2;
-  // +1 балл за каждое честное (не быстрое) перелистывание страницы
-  const honestPagePoints = honestPagesCount;
+  // Время не приносит отдельных баллов — используется только как античит-фильтр
+  const timePoints = 0;
+  // +3 балла за каждую честно прочитанную (не быструю и не повторную) страницу
+  const honestPagePoints = honestPagesCount * POINTS_PER_HONEST_PAGE;
   // Бонус за честно дочитанную книгу (зависит от возраста)
   const completionPoints = honestCompletedBooks * completionBonus;
 
   return {
-    totalPoints: timePoints + honestPagePoints + completionPoints,
+    totalPoints: honestPagePoints + completionPoints,
     timePoints,
     honestPagePoints,
     completionPoints,

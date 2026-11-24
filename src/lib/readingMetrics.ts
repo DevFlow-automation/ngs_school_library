@@ -21,6 +21,11 @@ export interface BookCompletionCheck {
 }
 
 export const MIN_COMPLETION_READING_SECONDS = 90;
+/** Пауза таймера при отсутствии действий (скролл, клик, клавиатура, мышь) */
+export const AFK_PAUSE_TIMEOUT_MS = 120_000;
+/** Максимум активного времени, засчитываемого на одну страницу (3 минуты) */
+export const MAX_ACTIVE_SECONDS_PER_PAGE = 180;
+export const MAX_ACTIVE_MS_PER_PAGE = MAX_ACTIVE_SECONDS_PER_PAGE * 1000;
 
 /**
  * Порог "слишком быстрого" перелистывания страницы в секундах.
