@@ -264,6 +264,39 @@ export default function AdminStudentProfilePage() {
     await loadStudentData();
   };
 
+  const handleResetBookProgress = async (row: ProgressRow, bookTitle: string) => {
+    if (!student) return;
+    const ok = window.confirm(
+      `Сбросить прогресс и обнулить время/клики ученика «${student.full_name}» по книге «${bookTitle}»?\nБаллы и рейтинг пересчитаются сразу.`
+    );
+    if (!ok) return;
+
+    const { error: updateErr } = await supabase
+      .from('reading_progress')
+      .update({
+        current_chapter: 0,
+        current_page: 0,
+        progress_percent: 0,
+        reading_seconds: 0,
+        pages_turned: 0,
+        fast_turns_count: 0,
+        avg_seconds_per_page: 0,
+        min_seconds_per_page: null,
+      })
+      .eq('id', row.id);
+
+    if (updateErr) {
+      alert('Не удалось сбросить прогресс: ' + updateErr.message);
+      return;
+    }
+
+    if (!row.is_bookmarked) {
+      await supabase.from('reading_progress').delete().eq('id', row.id);
+    }
+
+    await loadStudentData();
+  };
+
   const progressRows = useMemo(() => {
     const rows = student?.reading_progress || [];
     return [...rows].sort(
@@ -661,6 +694,15 @@ export default function AdminStudentProfilePage() {
                             >
                               <MessageSquare className="w-3 h-3" />
                               <span>Написать</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleResetBookProgress(row, book?.title || row.book_id)}
+                              className="px-2.5 py-0.5 rounded-lg bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 hover:bg-red-100 text-[10.5px] font-bold inline-flex items-center gap-1"
+                              title="Сбросить прогресс, время и клики по этой книге (снять накрутку)"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Сбросить</span>
                             </button>
                           </div>
                         </div>

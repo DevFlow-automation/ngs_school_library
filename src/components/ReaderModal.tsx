@@ -6,7 +6,7 @@ import { fetchBookWithChapters, getCachedBookById } from '@/lib/booksService';
 import { 
   ArrowLeft, Sliders, Bookmark, Search, 
   ChevronLeft, ChevronRight, CheckCircle2, ListFilter, X, Clock, Lock, AlertTriangle,
-  Loader2, RefreshCw, BookOpen, Pause
+  Loader2, RefreshCw, BookOpen, Pause, ShieldCheck
 } from 'lucide-react';
 import { Book, ReaderTheme } from '@/types/book';
 import {
@@ -20,6 +20,10 @@ import {
   getFastTurnThresholdSeconds,
 } from '@/lib/readingMetrics';
 import {
+  generateReadingCheckQuestion,
+  type ReadingCheckQuestion,
+} from '@/lib/readingCheck';
+import {
   sendAutoReadingWarning,
   type AutoWarningParams,
 } from '@/lib/autoWarnings';
@@ -31,8 +35,27 @@ import {
 
 const TARGET_CHARS_PER_PAGE = 1100;
 const AUTO_FLUSH_MS = 15000;
+const CHECK_MIN_PAGES = 10;
+const CHECK_MAX_PAGES = 14;
+const CHECK_MAX_INTERVAL_MS = 15 * 60 * 1000;
+const SAME_PIXEL_STREAK_TRIGGER = 5;
+const ROBOTIC_INTERVAL_COUNT = 6;
+const ROBOTIC_INTERVAL_MAX_SPREAD_SEC = 1.5;
 
-type TimerPauseReason = 'none' | 'blur' | 'afk' | 'page_limit';
+const pickNextCheckPageThreshold = () =>
+  CHECK_MIN_PAGES + Math.floor(Math.random() * (CHECK_MAX_PAGES - CHECK_MIN_PAGES + 1));
+
+type TimerPauseReason = 'none' | 'blur' | 'afk' | 'page_limit' | 'check';
+
+interface PendingCheckAdvance {
+  kind: 'next_page' | 'next_chapter';
+  pageKey: string;
+  alreadyCredited: boolean;
+  elapsedSec: number;
+  isFastTurn: boolean;
+  chapterElapsedSec?: number;
+  isFastChapter?: boolean;
+}
 
 interface LivePaceWarning {
   severity: 'warning' | 'danger';
@@ -75,6 +98,9 @@ export const ReaderModal: React.FC = () => {
   const [reloadNonce, setReloadNonce] = useState(0);
   const [liveWarning, setLiveWarning] = useState<LivePaceWarning | null>(null);
   const [timerPauseReason, setTimerPauseReason] = useState<TimerPauseReason>('none');
+  const [activeCheck, setActiveCheck] = useState<ReadingCheckQuestion | null>(null);
+  const [checkWrongIndices, setCheckWrongIndices] = useState<number[]>([]);
+  const [checkWrongCount, setCheckWrongCount] = useState(0);
   const textScrollRef = useRef<HTMLDivElement>(null);
 
   // Рефы для точного подсчёта активного времени чтения, AFK-паузы, лимита на страницу и античита
@@ -84,6 +110,16 @@ export const ReaderModal: React.FC = () => {
   const activeSinceRef = useRef<number | null>(null);
   const lastActivityAtRef = useRef<number>(0);
   const pageLimitReachedRef = useRef(false);
+  const activeCheckRef = useRef<ReadingCheckQuestion | null>(null);
+  const pendingCheckAdvanceRef = useRef<PendingCheckAdvance | null>(null);
+  const pagesSinceLastCheckRef = useRef(0);
+  const readingMsSinceLastCheckRef = useRef(0);
+  const nextCheckAfterPagesRef = useRef(pickNextCheckPageThreshold());
+  const lastNextClickPosRef = useRef<{ x: number; y: number } | null>(null);
+  const lastPointerPosRef = useRef<{ x: number; y: number } | null>(null);
+  const hadHumanMoveSinceLastTurnRef = useRef(true);
+  const samePixelClickStreakRef = useRef(0);
+  const recentTurnIntervalsRef = useRef<number[]>([]);
   const fastPageStreakRef = useRef(0);
   const fastChapterStreakRef = useRef(0);
   const repeatTurnStreakRef = useRef(0);
@@ -125,12 +161,14 @@ export const ReaderModal: React.FC = () => {
       unsavedReadingMsRef.current += credited;
       pageActiveMsRef.current += credited;
       chapterActiveMsRef.current += credited;
+      readingMsSinceLastCheckRef.current += credited;
 
       if (pageActiveMsRef.current >= MAX_ACTIVE_MS_PER_PAGE) {
         pageLimitReachedRef.current = true;
       }
     }
-    activeSinceRef.current = keepRunning && !pageLimitReachedRef.current ? now : null;
+    activeSinceRef.current =
+      keepRunning && !pageLimitReachedRef.current && !activeCheckRef.current ? now : null;
   }, []);
 
   const flushReadingMetrics = useCallback(
@@ -280,6 +318,19 @@ export const ReaderModal: React.FC = () => {
       chapterSkipCountRef.current = 0;
       chapterActiveMsRef.current = 0;
       pageLimitReachedRef.current = false;
+      activeCheckRef.current = null;
+      pendingCheckAdvanceRef.current = null;
+      pagesSinceLastCheckRef.current = 0;
+      readingMsSinceLastCheckRef.current = 0;
+      nextCheckAfterPagesRef.current = pickNextCheckPageThreshold();
+      lastNextClickPosRef.current = null;
+      lastPointerPosRef.current = null;
+      hadHumanMoveSinceLastTurnRef.current = true;
+      samePixelClickStreakRef.current = 0;
+      recentTurnIntervalsRef.current = [];
+      setActiveCheck(null);
+      setCheckWrongIndices([]);
+      setCheckWrongCount(0);
       setTimerPauseReason('none');
       maxVisitedChapterRef.current = Math.max(savedProgress?.chapterIndex || 0, activeChapterIndex);
       dismissLiveWarning();
@@ -322,12 +373,20 @@ export const ReaderModal: React.FC = () => {
 
     const pauseTimer = (reason: TimerPauseReason) => {
       captureActiveSlice(false);
-      setTimerPauseReason(pageLimitReachedRef.current ? 'page_limit' : reason);
+      if (activeCheckRef.current) {
+        setTimerPauseReason('check');
+      } else {
+        setTimerPauseReason(pageLimitReachedRef.current ? 'page_limit' : reason);
+      }
     };
 
     const resumeTimer = () => {
       const now = performance.now();
       lastActivityAtRef.current = now;
+      if (activeCheckRef.current) {
+        setTimerPauseReason('check');
+        return;
+      }
       if (!isWindowActive()) {
         setTimerPauseReason('blur');
         return;
@@ -344,11 +403,33 @@ export const ReaderModal: React.FC = () => {
 
     const handleUserActivity = (event: Event) => {
       const now = performance.now();
-      if (
-        event.type === 'mousemove' &&
-        activeSinceRef.current !== null &&
-        now - lastActivityAtRef.current < 1000
+
+      if (event.type === 'mousemove') {
+        const me = event as MouseEvent;
+        if (lastPointerPosRef.current) {
+          const dx = me.clientX - lastPointerPosRef.current.x;
+          const dy = me.clientY - lastPointerPosRef.current.y;
+          if (Math.hypot(dx, dy) > 20) {
+            hadHumanMoveSinceLastTurnRef.current = true;
+            lastPointerPosRef.current = { x: me.clientX, y: me.clientY };
+          }
+        } else {
+          lastPointerPosRef.current = { x: me.clientX, y: me.clientY };
+        }
+        if (activeSinceRef.current !== null && now - lastActivityAtRef.current < 1000) {
+          return;
+        }
+      } else if (
+        event.type === 'wheel' ||
+        event.type === 'scroll' ||
+        event.type === 'touchstart' ||
+        event.type === 'keydown'
       ) {
+        hadHumanMoveSinceLastTurnRef.current = true;
+      }
+
+      // Если открыта проверка чтения — не возобновляем таймер до ответа
+      if (activeCheckRef.current) {
         return;
       }
 
@@ -746,6 +827,7 @@ export const ReaderModal: React.FC = () => {
   };
 
   const handleSelectChapter = (idx: number) => {
+    if (activeCheckRef.current) return;
     if (idx === activeChapterIndex) {
       setShowMobileToc(false);
       return;
@@ -831,16 +913,119 @@ export const ReaderModal: React.FC = () => {
     setShowMobileToc(false);
   };
 
-  const handlePrevPage = () => {
-    flushReadingMetrics(book.id, { skipSync: true });
-    resetPageTimerForNavigation();
-    setCurrentPage((prev) => Math.max(0, prev - 1));
+  const openReadingCheck = (
+    reason: 'periodic' | 'autoclicker',
+    pending: PendingCheckAdvance | null,
+    excludeWord?: string
+  ) => {
+    const recentParas: string[] = [];
+    for (let p = Math.max(0, currentPage - 2); p <= currentPage; p++) {
+      if (pages[p]) {
+        recentParas.push(...pages[p]);
+      }
+    }
+    if (recentParas.length < 3 && activeChapterIndex > 0) {
+      const prevCh = book.chapters[activeChapterIndex - 1];
+      if (prevCh?.paragraphs?.length) {
+        recentParas.push(...prevCh.paragraphs.slice(-4));
+      }
+    }
+
+    const poolParas: string[] = [...(currentChapter.paragraphs || [])];
+    if (poolParas.length < 15 && book.chapters.length > 1) {
+      if (activeChapterIndex > 0) {
+        poolParas.push(...(book.chapters[activeChapterIndex - 1]?.paragraphs || []));
+      }
+      if (activeChapterIndex + 1 < book.chapters.length) {
+        poolParas.push(...(book.chapters[activeChapterIndex + 1]?.paragraphs || []));
+      }
+    }
+
+    const question = generateReadingCheckQuestion({
+      recentParagraphs: recentParas,
+      poolParagraphs: poolParas,
+      reason,
+      excludeWord,
+    });
+
+    captureActiveSlice(false);
+    setTimerPauseReason('check');
+    pendingCheckAdvanceRef.current = pending;
+    activeCheckRef.current = question;
+    setActiveCheck(question);
+    setCheckWrongIndices([]);
+    setCheckWrongCount(0);
   };
 
-  const handleNextPage = () => {
-    const pageKey = `${activeChapterIndex}:${currentPage}`;
-    const alreadyCredited = isPageAlreadyCredited(book.id, activeChapterIndex, currentPage);
-    const { elapsedSec, isFastTurn } = measureCurrentPageTurn();
+  const inspectClickForAutoclicker = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    elapsedSec: number,
+    isFastTurn: boolean
+  ): { blockedScript: boolean; suspiciousDetail: string | null } => {
+    if (!e.isTrusted) {
+      showLiveWarning(
+        {
+          severity: 'danger',
+          title: 'Автоматический клик заблокирован',
+          message:
+            'Перелистывание программным скриптом не допускается. Используйте кнопки чтения вручную.',
+        },
+        12000
+      );
+      dispatchProfileAutoWarning({
+        reason: 'autoclicker',
+        autoclickerDetail: 'программный клик скриптом',
+        readingSeconds: useReadingStore.getState().readingProgress[book.id]?.readingSeconds || 0,
+      });
+      return { blockedScript: true, suspiciousDetail: null };
+    }
+
+    if (e.clientX > 0 || e.clientY > 0) {
+      const prev = lastNextClickPosRef.current;
+      if (
+        prev &&
+        Math.abs(e.clientX - prev.x) <= 2 &&
+        Math.abs(e.clientY - prev.y) <= 2 &&
+        !hadHumanMoveSinceLastTurnRef.current
+      ) {
+        samePixelClickStreakRef.current += 1;
+      } else {
+        samePixelClickStreakRef.current = 1;
+      }
+      lastNextClickPosRef.current = { x: e.clientX, y: e.clientY };
+      hadHumanMoveSinceLastTurnRef.current = false;
+    }
+
+    if (!isFastTurn && elapsedSec >= 10) {
+      const nextIntervals = [...recentTurnIntervalsRef.current, elapsedSec].slice(-ROBOTIC_INTERVAL_COUNT);
+      recentTurnIntervalsRef.current = nextIntervals;
+    }
+
+    if (samePixelClickStreakRef.current >= SAME_PIXEL_STREAK_TRIGGER) {
+      return {
+        blockedScript: false,
+        suspiciousDetail: `${samePixelClickStreakRef.current} кликов подряд в одну точку без движения мыши и прокрутки`,
+      };
+    }
+
+    if (recentTurnIntervalsRef.current.length >= ROBOTIC_INTERVAL_COUNT) {
+      const min = Math.min(...recentTurnIntervalsRef.current);
+      const max = Math.max(...recentTurnIntervalsRef.current);
+      if (max - min <= ROBOTIC_INTERVAL_MAX_SPREAD_SEC) {
+        return {
+          blockedScript: false,
+          suspiciousDetail: `${ROBOTIC_INTERVAL_COUNT} перелистываний подряд с одинаковым интервалом ~${Math.round(
+            (min + max) / 2
+          )} сек`,
+        };
+      }
+    }
+
+    return { blockedScript: false, suspiciousDetail: null };
+  };
+
+  const commitPageAdvance = (pending: PendingCheckAdvance) => {
+    const { kind, pageKey, alreadyCredited, elapsedSec, isFastTurn, isFastChapter } = pending;
 
     if (alreadyCredited) {
       flushReadingMetrics(book.id, { skipSync: true });
@@ -851,27 +1036,180 @@ export const ReaderModal: React.FC = () => {
             severity: 'warning',
             title: 'Страница уже засчитана',
             message:
-              'Повторное перелистывание страниц туда-сюда не приносит дополнительных баллов. Переходите к новым страницам книги.',
+              kind === 'next_chapter'
+                ? 'Повторное перелистывание уже прочитанных страниц не приносит дополнительных баллов. Продолжайте читать новые главы.'
+                : 'Повторное перелистывание страниц туда-сюда не приносит дополнительных баллов. Переходите к новым страницам книги.',
           },
           7000
         );
       }
     } else {
       repeatTurnStreakRef.current = 0;
+      if (!isFastTurn) {
+        pagesSinceLastCheckRef.current += 1;
+      }
       flushReadingMetrics(book.id, {
         pageTurnElapsedSec: elapsedSec,
         isFastTurn,
         creditedPageKey: pageKey,
         skipSync: true,
       });
-      evaluateFastPageWarning(isFastTurn);
+
+      if (kind === 'next_chapter') {
+        maxVisitedChapterRef.current = Math.max(maxVisitedChapterRef.current, activeChapterIndex + 1);
+
+        if (isFastChapter) {
+          fastChapterStreakRef.current += 1;
+        } else {
+          fastChapterStreakRef.current = 0;
+        }
+
+        if (fastChapterStreakRef.current >= 3) {
+          if (isFastTurn) {
+            fastPageStreakRef.current += 1;
+          } else {
+            fastPageStreakRef.current = 0;
+          }
+          showLiveWarning(
+            {
+              severity: 'danger',
+              title: 'Слишком быстрое перелистывание глав',
+              message: `Ты пролистал(а) ${fastChapterStreakRef.current} главы подряд слишком быстро. Пожалуйста, читай главы целиком и в спокойном темпе.`,
+            },
+            12000
+          );
+          dispatchProfileAutoWarning({
+            reason: 'fast_chapters',
+            fastStreak: fastChapterStreakRef.current,
+            readingSeconds: useReadingStore.getState().readingProgress[book.id]?.readingSeconds || 0,
+          });
+        } else if (fastChapterStreakRef.current === 2) {
+          if (isFastTurn) {
+            fastPageStreakRef.current += 1;
+          } else {
+            fastPageStreakRef.current = 0;
+          }
+          showLiveWarning(
+            {
+              severity: 'warning',
+              title: 'Слишком быстрый переход между главами',
+              message:
+                'Ты переходишь к следующим главам слишком быстро. Постарайся внимательно дочитывать каждую главу.',
+            },
+            8000
+          );
+        } else {
+          evaluateFastPageWarning(isFastTurn);
+        }
+      } else {
+        evaluateFastPageWarning(isFastTurn);
+      }
     }
 
     resetPageTimerForNavigation();
-    setCurrentPage((prev) => Math.min(totalPages - 1, prev + 1));
+    if (kind === 'next_chapter') {
+      chapterActiveMsRef.current = 0;
+      setChapterIndex(activeChapterIndex + 1);
+      setCurrentPage(0);
+      setShowMobileToc(false);
+    } else {
+      setCurrentPage((prev) => Math.min(totalPages - 1, prev + 1));
+    }
   };
 
-  const handleNextChapter = () => {
+  const handleAnswerCheckOption = (
+    optionIndex: number,
+    e: React.MouseEvent<HTMLButtonElement>
+  ) => {
+    if (!e.isTrusted || !activeCheck) return;
+
+    if (optionIndex === activeCheck.correctIndex) {
+      activeCheckRef.current = null;
+      setActiveCheck(null);
+      setCheckWrongIndices([]);
+      setCheckWrongCount(0);
+      pagesSinceLastCheckRef.current = 0;
+      readingMsSinceLastCheckRef.current = 0;
+      nextCheckAfterPagesRef.current = pickNextCheckPageThreshold();
+      samePixelClickStreakRef.current = 0;
+      recentTurnIntervalsRef.current = [];
+      hadHumanMoveSinceLastTurnRef.current = true;
+
+      const pending = pendingCheckAdvanceRef.current;
+      pendingCheckAdvanceRef.current = null;
+      if (pending) {
+        commitPageAdvance(pending);
+      } else {
+        resetPageTimerForNavigation();
+      }
+      return;
+    }
+
+    setCheckWrongIndices((prev) => (prev.includes(optionIndex) ? prev : [...prev, optionIndex]));
+    setCheckWrongCount((c) => c + 1);
+  };
+
+  const handleRefreshCheckQuestion = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (!e.isTrusted || !activeCheck) return;
+    const prevCorrect = activeCheck.options[activeCheck.correctIndex];
+    openReadingCheck(activeCheck.reason, pendingCheckAdvanceRef.current, prevCorrect);
+  };
+
+  const handlePrevPage = () => {
+    if (activeCheckRef.current) return;
+    flushReadingMetrics(book.id, { skipSync: true });
+    resetPageTimerForNavigation();
+    setCurrentPage((prev) => Math.max(0, prev - 1));
+  };
+
+  const handleNextPage = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (activeCheckRef.current) return;
+
+    const pageKey = `${activeChapterIndex}:${currentPage}`;
+    const alreadyCredited = isPageAlreadyCredited(book.id, activeChapterIndex, currentPage);
+    const { elapsedSec, isFastTurn } = measureCurrentPageTurn();
+
+    const inspection = inspectClickForAutoclicker(e, elapsedSec, isFastTurn);
+    if (inspection.blockedScript) {
+      return;
+    }
+
+    const pending: PendingCheckAdvance = {
+      kind: 'next_page',
+      pageKey,
+      alreadyCredited,
+      elapsedSec,
+      isFastTurn,
+    };
+
+    if (inspection.suspiciousDetail) {
+      dispatchProfileAutoWarning({
+        reason: 'autoclicker',
+        autoclickerDetail: inspection.suspiciousDetail,
+        readingSeconds: useReadingStore.getState().readingProgress[book.id]?.readingSeconds || 0,
+      });
+      openReadingCheck('autoclicker', pending);
+      return;
+    }
+
+    const needsPeriodicCheck =
+      !alreadyCredited &&
+      !isFastTurn &&
+      (pagesSinceLastCheckRef.current + 1 >= nextCheckAfterPagesRef.current ||
+        (pagesSinceLastCheckRef.current >= 3 &&
+          readingMsSinceLastCheckRef.current >= CHECK_MAX_INTERVAL_MS));
+
+    if (needsPeriodicCheck) {
+      openReadingCheck('periodic', pending);
+      return;
+    }
+
+    commitPageAdvance(pending);
+  };
+
+  const handleNextChapter = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (activeCheckRef.current) return;
+
     const pageKey = `${activeChapterIndex}:${currentPage}`;
     const alreadyCredited = isPageAlreadyCredited(book.id, activeChapterIndex, currentPage);
     const { elapsedSec, isFastTurn } = measureCurrentPageTurn();
@@ -879,82 +1217,45 @@ export const ReaderModal: React.FC = () => {
     const chapterChars = (currentChapter.paragraphs || []).join(' ').length;
     const fastChapterThreshold = getFastChapterThresholdSeconds(chapterChars);
     const isFastChapter = chapterElapsedSec < fastChapterThreshold;
-    chapterActiveMsRef.current = 0;
 
-    if (alreadyCredited) {
-      flushReadingMetrics(book.id, { skipSync: true });
-      repeatTurnStreakRef.current += 1;
-      if (repeatTurnStreakRef.current >= 2) {
-        showLiveWarning(
-          {
-            severity: 'warning',
-            title: 'Страница уже засчитана',
-            message:
-              'Повторное перелистывание уже прочитанных страниц не приносит дополнительных баллов. Продолжайте читать новые главы.',
-          },
-          7000
-        );
-      }
-    } else {
-      repeatTurnStreakRef.current = 0;
-      flushReadingMetrics(book.id, {
-        pageTurnElapsedSec: elapsedSec,
-        isFastTurn,
-        creditedPageKey: pageKey,
-        skipSync: true,
-      });
-
-      maxVisitedChapterRef.current = Math.max(maxVisitedChapterRef.current, activeChapterIndex + 1);
-
-      if (isFastChapter) {
-        fastChapterStreakRef.current += 1;
-      } else {
-        fastChapterStreakRef.current = 0;
-      }
-
-      if (fastChapterStreakRef.current >= 3) {
-        if (isFastTurn) {
-          fastPageStreakRef.current += 1;
-        } else {
-          fastPageStreakRef.current = 0;
-        }
-        showLiveWarning(
-          {
-            severity: 'danger',
-            title: 'Слишком быстрое перелистывание глав',
-            message: `Ты пролистал(а) ${fastChapterStreakRef.current} главы подряд слишком быстро. Пожалуйста, читай главы целиком и в спокойном темпе.`,
-          },
-          12000
-        );
-        dispatchProfileAutoWarning({
-          reason: 'fast_chapters',
-          fastStreak: fastChapterStreakRef.current,
-          readingSeconds: useReadingStore.getState().readingProgress[book.id]?.readingSeconds || 0,
-        });
-      } else if (fastChapterStreakRef.current === 2) {
-        if (isFastTurn) {
-          fastPageStreakRef.current += 1;
-        } else {
-          fastPageStreakRef.current = 0;
-        }
-        showLiveWarning(
-          {
-            severity: 'warning',
-            title: 'Слишком быстрый переход между главами',
-            message:
-              'Ты переходишь к следующим главам слишком быстро. Постарайся внимательно дочитывать каждую главу.',
-          },
-          8000
-        );
-      } else {
-        evaluateFastPageWarning(isFastTurn);
-      }
+    const inspection = inspectClickForAutoclicker(e, elapsedSec, isFastTurn);
+    if (inspection.blockedScript) {
+      return;
     }
 
-    resetPageTimerForNavigation();
-    setChapterIndex(activeChapterIndex + 1);
-    setCurrentPage(0);
-    setShowMobileToc(false);
+    const pending: PendingCheckAdvance = {
+      kind: 'next_chapter',
+      pageKey,
+      alreadyCredited,
+      elapsedSec,
+      isFastTurn,
+      chapterElapsedSec,
+      isFastChapter,
+    };
+
+    if (inspection.suspiciousDetail) {
+      dispatchProfileAutoWarning({
+        reason: 'autoclicker',
+        autoclickerDetail: inspection.suspiciousDetail,
+        readingSeconds: useReadingStore.getState().readingProgress[book.id]?.readingSeconds || 0,
+      });
+      openReadingCheck('autoclicker', pending);
+      return;
+    }
+
+    const needsPeriodicCheck =
+      !alreadyCredited &&
+      !isFastTurn &&
+      (pagesSinceLastCheckRef.current + 1 >= nextCheckAfterPagesRef.current ||
+        (pagesSinceLastCheckRef.current >= 3 &&
+          readingMsSinceLastCheckRef.current >= CHECK_MAX_INTERVAL_MS));
+
+    if (needsPeriodicCheck) {
+      openReadingCheck('periodic', pending);
+      return;
+    }
+
+    commitPageAdvance(pending);
   };
 
   return (
@@ -988,24 +1289,33 @@ export const ReaderModal: React.FC = () => {
         <div className="flex items-center gap-1.5 shrink-0">
           <div
             className={`px-2.5 py-1 rounded-full text-[11px] font-mono font-bold flex items-center gap-1.5 transition-colors ${
-              timerPauseReason === 'afk' || timerPauseReason === 'page_limit'
+              timerPauseReason === 'afk' ||
+              timerPauseReason === 'page_limit' ||
+              timerPauseReason === 'check'
                 ? 'bg-amber-500/15 text-amber-800 dark:text-amber-300'
                 : 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300'
             }`}
             title={
-              timerPauseReason === 'afk'
+              timerPauseReason === 'check'
+                ? 'Таймер на паузе до прохождения короткой проверки чтения'
+                : timerPauseReason === 'afk'
                 ? 'Таймер на паузе из-за бездействия (2 мин). Прокрутите текст или перелистните страницу.'
                 : timerPauseReason === 'page_limit'
                 ? `Достигнут лимит ${Math.round(MAX_ACTIVE_SECONDS_PER_PAGE / 60)} мин на одну страницу. Перейдите на следующую страницу, чтобы таймер продолжился.`
                 : 'Активное время чтения (пауза при бездействии 2 мин и лимит 3 мин/стр)'
             }
           >
-            {timerPauseReason === 'afk' || timerPauseReason === 'page_limit' ? (
+            {timerPauseReason === 'afk' ||
+            timerPauseReason === 'page_limit' ||
+            timerPauseReason === 'check' ? (
               <Pause className="w-3.5 h-3.5 shrink-0" />
             ) : (
               <Clock className="w-3.5 h-3.5 shrink-0" />
             )}
             <span>{formatReadingTimer(totalDisplaySeconds)}</span>
+            {timerPauseReason === 'check' && (
+              <span className="hidden sm:inline font-sans text-[10px] font-extrabold">· Проверка</span>
+            )}
             {timerPauseReason === 'afk' && (
               <span className="hidden sm:inline font-sans text-[10px] font-extrabold">· Пауза</span>
             )}
@@ -1196,7 +1506,8 @@ export const ReaderModal: React.FC = () => {
               hasNextChapter ? (
                 <button
                   onClick={handleNextChapter}
-                  className="px-4 sm:px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-all"
+                  disabled={Boolean(activeCheck)}
+                  className="px-4 sm:px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-all"
                 >
                   <CheckCircle2 className="w-4 h-4" />
                   <span>След. глава →</span>
@@ -1212,7 +1523,8 @@ export const ReaderModal: React.FC = () => {
             ) : (
               <button
                 onClick={handleNextPage}
-                className="px-4 sm:px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1 shadow-md transition-all"
+                disabled={Boolean(activeCheck)}
+                className="px-4 sm:px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-xs font-bold flex items-center gap-1 shadow-md transition-all"
               >
                 <span className="hidden sm:inline">Следующая страница</span>
                 <span className="sm:hidden">Вперед</span>
@@ -1332,6 +1644,88 @@ export const ReaderModal: React.FC = () => {
                     );
                   })}
                 </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Модальное окно проверки реального чтения (Вариант 2 — защита от автокликеров) */}
+      {activeCheck && (
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none">
+          <div className="w-full max-w-md rounded-[28px] bg-white dark:bg-[#1E212B] text-[#191C20] dark:text-white border border-black/10 dark:border-white/15 shadow-2xl p-5 sm:p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div
+                className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
+                  activeCheck.reason === 'autoclicker'
+                    ? 'bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400'
+                    : 'bg-indigo-100 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400'
+                }`}
+              >
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <div className="space-y-0.5">
+                <h3 className="text-sm sm:text-base font-extrabold leading-snug">
+                  {activeCheck.reason === 'autoclicker'
+                    ? 'Подтверди, что читаешь книгу ты'
+                    : 'Короткая проверка чтения'}
+                </h3>
+                <p className="text-xs text-[#5E6270] dark:text-[#A4A8B5] leading-relaxed">
+                  {activeCheck.prompt}
+                </p>
+              </div>
+            </div>
+
+            {activeCheck.mode === 'text' && activeCheck.snippet && (
+              <div className="p-3.5 rounded-2xl bg-[#F6F7FC] dark:bg-[#151820] border border-[#E0E2EC] dark:border-[#2E323D] text-xs sm:text-sm leading-relaxed font-serif">
+                «
+                {activeCheck.snippet.split('_____').map((part, i, arr) => (
+                  <React.Fragment key={i}>
+                    {part}
+                    {i < arr.length - 1 && (
+                      <span className="inline-block px-2 py-0.5 mx-1 rounded-lg bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-sans font-extrabold text-xs tracking-wider">
+                        _____
+                      </span>
+                    )}
+                  </React.Fragment>
+                ))}
+                »
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
+              {activeCheck.options.map((option, idx) => {
+                const isWrong = checkWrongIndices.includes(idx);
+                return (
+                  <button
+                    key={`${activeCheck.id}_${idx}`}
+                    type="button"
+                    disabled={isWrong}
+                    onClick={(e) => handleAnswerCheckOption(idx, e)}
+                    className={`px-3 py-2.5 rounded-xl border text-xs sm:text-sm font-bold transition-all text-center ${
+                      isWrong
+                        ? 'border-red-300 dark:border-red-800/70 bg-red-50 dark:bg-red-950/40 text-red-500 line-through opacity-60 cursor-not-allowed'
+                        : 'border-[#DCE0EE] dark:border-[#323645] bg-white dark:bg-[#252936] hover:border-indigo-500 hover:bg-indigo-50/70 dark:hover:bg-indigo-950/40 cursor-pointer active:scale-[0.98]'
+                    }`}
+                  >
+                    {option}
+                  </button>
+                );
+              })}
+            </div>
+
+            {checkWrongCount > 0 && (
+              <div className="flex items-center justify-between gap-2 text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 rounded-xl">
+                <span>Не совсем то слово — попробуй выбрать другой вариант.</span>
+                {checkWrongCount >= 2 && (
+                  <button
+                    type="button"
+                    onClick={handleRefreshCheckQuestion}
+                    className="px-2 py-1 rounded-lg bg-amber-200/80 dark:bg-amber-900/60 text-amber-950 dark:text-amber-100 font-bold shrink-0 hover:opacity-90"
+                  >
+                    Другой фрагмент
+                  </button>
+                )}
               </div>
             )}
           </div>

@@ -7,7 +7,8 @@ export type AutoWarningReason =
   | 'fast_pages'
   | 'fast_chapters'
   | 'chapter_skip'
-  | 'unverified_completion';
+  | 'unverified_completion'
+  | 'autoclicker';
 
 export interface AutoWarningParams {
   studentId: string;
@@ -23,6 +24,7 @@ export interface AutoWarningParams {
   fromChapter?: number; // 1-based
   toChapter?: number; // 1-based
   completionReason?: string;
+  autoclickerDetail?: string;
 }
 
 const COOLDOWN_STORAGE_KEY = 'ngs_auto_warnings_cooldown_v1';
@@ -34,6 +36,7 @@ const REASON_SIGNATURE: Record<AutoWarningReason, string> = {
   fast_chapters: 'быстрое перелистывание глав',
   chapter_skip: 'перескок по главам',
   unverified_completion: 'книга не засчитана как прочитанная',
+  autoclicker: 'подозрение на автокликер',
 };
 
 const inFlightKeys = new Set<string>();
@@ -141,6 +144,11 @@ export function buildAutoWarningMessage(params: AutoWarningParams): string {
         ? ` Причина: ${params.completionReason}`
         : '';
       return `Автоматическое предупреждение по книге «${safeTitle}»: книга не засчитана как прочитанная на 100%.${reasonText} Прочитай произведение внимательно в спокойном темпе.`;
+    }
+
+    case 'autoclicker': {
+      const detail = params.autoclickerDetail ? ` (${params.autoclickerDetail})` : '';
+      return `Автоматическое предупреждение по книге «${safeTitle}»: зафиксировано подозрение на автокликер или автоматическое перелистывание${detail}. Дальнейшее чтение требует подтверждения внимания.`;
     }
   }
 }

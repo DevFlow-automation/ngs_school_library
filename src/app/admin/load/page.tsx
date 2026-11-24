@@ -285,6 +285,43 @@ export default function AdminDashboardPage() {
     await fetchActivity();
   };
 
+  const handleResetBookProgress = async (
+    studentName: string,
+    row: { id: string; is_bookmarked?: boolean },
+    bookTitle: string
+  ) => {
+    const ok = window.confirm(
+      `Сбросить прогресс и обнулить время/клики ученика «${studentName}» по книге «${bookTitle}»?\nБаллы и рейтинг пересчитаются сразу.`
+    );
+    if (!ok) return;
+
+    const { error: updateErr } = await supabase
+      .from('reading_progress')
+      .update({
+        current_chapter: 0,
+        current_page: 0,
+        progress_percent: 0,
+        reading_seconds: 0,
+        pages_turned: 0,
+        fast_turns_count: 0,
+        avg_seconds_per_page: 0,
+        min_seconds_per_page: null,
+      })
+      .eq('id', row.id);
+
+    if (updateErr) {
+      alert('Не удалось сбросить прогресс: ' + updateErr.message);
+      return;
+    }
+
+    if (!row.is_bookmarked) {
+      // Если книга не в закладках, пробуем удалить пустую строку (если RLS не даст — уже обнулено)
+      await supabase.from('reading_progress').delete().eq('id', row.id);
+    }
+
+    await fetchActivity();
+  };
+
   const resolveAllowedTab = (
     role: AdminSessionUser['role'],
     requestedTab: string | null
@@ -1636,6 +1673,21 @@ export default function AdminDashboardPage() {
                                     >
                                       <MessageSquare className="w-3 h-3" />
                                       <span>{pace.status === 'suspicious' ? 'Замечание' : 'Написать'}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleResetBookProgress(
+                                          st.full_name,
+                                          row,
+                                          bookObj?.title || row.book_id
+                                        )
+                                      }
+                                      className="px-2 py-0.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 dark:bg-red-950/40 dark:hover:bg-red-900/50 dark:text-red-300 text-[10px] font-bold inline-flex items-center gap-1 transition-colors"
+                                      title="Сбросить прогресс, время и клики по этой книге (снять накрутку)"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                      <span>Сбросить</span>
                                     </button>
                                   </div>
                                 </div>
