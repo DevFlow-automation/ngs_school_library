@@ -7,12 +7,13 @@ import {
   getMasterPassword,
   getServerSupabase,
   isMissingAdminsTableError,
+  isMissingAssignedClassesColumnError,
   safeEqualStrings,
   setAdminSessionCookie,
   verifyAdminPassword,
   type LibraryAdminDbRow,
 } from '@/lib/adminAuth';
-import type { AdminSessionUser } from '@/lib/adminTypes';
+import { normalizeAssignedClasses, type AdminSessionUser } from '@/lib/adminTypes';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,6 +59,7 @@ export async function POST(req: NextRequest) {
         name: 'Главный администратор',
         role: 'superadmin',
         note: 'Полный доступ',
+        assigned_classes: [],
       };
       const token = createSessionToken(superadmin, 'master');
       const res = NextResponse.json(
@@ -70,34 +72,57 @@ export async function POST(req: NextRequest) {
 
     // Проверяем дополнительных администраторов и кураторов из таблицы library_admins
     const supabase = getServerSupabase();
-    const { data, error } = await supabase
+    let rows: Partial<LibraryAdminDbRow>[] = [];
+    const fullRes = await supabase
       .from('library_admins')
-      .select('id, name, role, note, password_hash, is_active, password_updated_at')
+      .select('id, name, role, note, assigned_classes, password_hash, is_active, password_updated_at')
       .order('created_at', { ascending: false });
 
-    if (error) {
-      if (isMissingAdminsTableError(error)) {
+    if (fullRes.error) {
+      if (isMissingAssignedClassesColumnError(fullRes.error)) {
+        const fallbackRes = await supabase
+          .from('library_admins')
+          .select('id, name, role, note, password_hash, is_active, password_updated_at')
+          .order('created_at', { ascending: false });
+        if (fallbackRes.error) {
+          if (isMissingAdminsTableError(fallbackRes.error)) {
+            return NextResponse.json(
+              { ok: false, error: 'Неверный пароль' },
+              { status: 401 }
+            );
+          }
+          console.error('Ошибка проверки library_admins:', fallbackRes.error);
+          return NextResponse.json(
+            { ok: false, error: 'Ошибка проверки пароля' },
+            { status: 500 }
+          );
+        }
+        rows = (fallbackRes.data || []) as Partial<LibraryAdminDbRow>[];
+      } else if (isMissingAdminsTableError(fullRes.error)) {
         return NextResponse.json(
           { ok: false, error: 'Неверный пароль' },
           { status: 401 }
         );
+      } else {
+        console.error('Ошибка проверки library_admins:', fullRes.error);
+        return NextResponse.json(
+          { ok: false, error: 'Ошибка проверки пароля' },
+          { status: 500 }
+        );
       }
-      console.error('Ошибка проверки library_admins:', error);
-      return NextResponse.json(
-        { ok: false, error: 'Ошибка проверки пароля' },
-        { status: 500 }
-      );
+    } else {
+      rows = (fullRes.data || []) as Partial<LibraryAdminDbRow>[];
     }
 
-    const rows = (data || []) as LibraryAdminDbRow[];
     const candidates =
       rawPassword === trimmedPassword ? [rawPassword] : [rawPassword, trimmedPassword];
 
     let matchedInactive = false;
 
     for (const row of rows) {
+      if (!row.id || !row.name || !row.password_hash) continue;
       const matches = candidates.some((candidate) =>
-        verifyAdminPassword(candidate, row.password_hash)
+        verifyAdminPassword(candidate, row.password_hash!)
       );
       if (!matches) continue;
 
@@ -106,11 +131,14 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
+      const role = row.role === 'admin' ? 'admin' : 'supervisor';
       const sessionUser: AdminSessionUser = {
         id: row.id,
         name: row.name,
-        role: row.role === 'admin' ? 'admin' : 'supervisor',
+        role,
         note: row.note || '',
+        assigned_classes:
+          role === 'supervisor' ? normalizeAssignedClasses(row.assigned_classes) : [],
       };
 
       // Обновляем время последнего входа (best-effort)

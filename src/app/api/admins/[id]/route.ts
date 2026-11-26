@@ -5,10 +5,12 @@ import {
   hashAdminPassword,
   hasPasswordCollision,
   isMissingAdminsTableError,
+  isMissingAssignedClassesColumnError,
   isValidManagedRole,
   toPublicAdminRecord,
   type LibraryAdminDbRow,
 } from '@/lib/adminAuth';
+import { normalizeAssignedClasses } from '@/lib/adminTypes';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,6 +75,16 @@ export async function PATCH(
       updates.note = body.note.trim().slice(0, 120);
     }
 
+    let requestedAssignedClasses: string[] | undefined;
+    if (body?.assigned_classes !== undefined) {
+      requestedAssignedClasses =
+        body?.role === 'admin' ? [] : normalizeAssignedClasses(body.assigned_classes);
+      updates.assigned_classes = requestedAssignedClasses;
+    } else if (body?.role === 'admin') {
+      requestedAssignedClasses = [];
+      updates.assigned_classes = [];
+    }
+
     if (typeof body?.is_active === 'boolean') {
       updates.is_active = body.is_active;
     }
@@ -109,24 +121,63 @@ export async function PATCH(
     }
 
     const supabase = getServerSupabase();
-    const { data, error } = await supabase
+    let updatedRow: (Partial<LibraryAdminDbRow> & { id: string; name: string; role: string }) | null = null;
+
+    const fullRes = await supabase
       .from('library_admins')
       .update(updates)
       .eq('id', id)
-      .select('id, name, role, note, is_active, last_login_at, password_updated_at, created_at')
+      .select('id, name, role, note, assigned_classes, is_active, last_login_at, password_updated_at, created_at')
       .maybeSingle();
 
-    if (error) {
-      if (isMissingAdminsTableError(error)) {
+    if (fullRes.error) {
+      if (isMissingAssignedClassesColumnError(fullRes.error)) {
+        if (requestedAssignedClasses && requestedAssignedClasses.length > 0) {
+          return NextResponse.json(
+            {
+              ok: false,
+              classesColumnMissing: true,
+              error:
+                'Чтобы сохранять закреплённые классы, выполните SQL из файла supabase_admins_assigned_classes.sql в Supabase.',
+            },
+            { status: 503 }
+          );
+        }
+
+        const fallbackUpdates = { ...updates };
+        delete fallbackUpdates.assigned_classes;
+
+        if (Object.keys(fallbackUpdates).length === 0) {
+          const readRes = await supabase
+            .from('library_admins')
+            .select('id, name, role, note, is_active, last_login_at, password_updated_at, created_at')
+            .eq('id', id)
+            .maybeSingle();
+          if (readRes.error) throw readRes.error;
+          updatedRow = readRes.data as LibraryAdminDbRow | null;
+        } else {
+          const fallbackRes = await supabase
+            .from('library_admins')
+            .update(fallbackUpdates)
+            .eq('id', id)
+            .select('id, name, role, note, is_active, last_login_at, password_updated_at, created_at')
+            .maybeSingle();
+          if (fallbackRes.error) throw fallbackRes.error;
+          updatedRow = fallbackRes.data as LibraryAdminDbRow | null;
+        }
+      } else if (isMissingAdminsTableError(fullRes.error)) {
         return NextResponse.json(
           { ok: false, tableMissing: true, error: 'Таблица library_admins не создана' },
           { status: 503 }
         );
+      } else {
+        throw fullRes.error;
       }
-      throw error;
+    } else {
+      updatedRow = fullRes.data as LibraryAdminDbRow | null;
     }
 
-    if (!data) {
+    if (!updatedRow) {
       return NextResponse.json(
         { ok: false, error: 'Администратор не найден' },
         { status: 404 }
@@ -135,7 +186,7 @@ export async function PATCH(
 
     return NextResponse.json({
       ok: true,
-      admin: toPublicAdminRecord(data as LibraryAdminDbRow),
+      admin: toPublicAdminRecord(updatedRow),
     });
   } catch (err) {
     console.error('Ошибка обновления администратора:', err);

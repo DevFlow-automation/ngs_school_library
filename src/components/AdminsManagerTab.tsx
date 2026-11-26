@@ -10,7 +10,9 @@ import {
   Edit3,
   Eye,
   EyeOff,
+  GraduationCap,
   Key,
+  Plus,
   Power,
   RefreshCw,
   Shield,
@@ -21,13 +23,19 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { ADMIN_ROLE_LABELS, type AdminRecordPublic, type ManagedAdminRole } from '@/lib/adminTypes';
+import {
+  ADMIN_ROLE_LABELS,
+  normalizeAssignedClasses,
+  type AdminRecordPublic,
+  type ManagedAdminRole,
+} from '@/lib/adminTypes';
 
 const SETUP_SQL = `CREATE TABLE IF NOT EXISTS library_admins (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   name TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'supervisor' CHECK (role IN ('supervisor', 'admin')),
   note TEXT NOT NULL DEFAULT '',
+  assigned_classes TEXT[] NOT NULL DEFAULT '{}',
   password_hash TEXT NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   last_login_at TIMESTAMPTZ,
@@ -54,6 +62,9 @@ BEGIN
   END IF;
 END $$;`;
 
+const ADD_CLASSES_COLUMN_SQL = `ALTER TABLE library_admins
+  ADD COLUMN IF NOT EXISTS assigned_classes TEXT[] NOT NULL DEFAULT '{}';`;
+
 function generateReadablePassword(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const randomChunk = (len: number) => {
@@ -76,24 +87,32 @@ interface IssuedCredentials {
   name: string;
   role: ManagedAdminRole;
   note: string;
+  assigned_classes: string[];
   password: string;
   isReset: boolean;
 }
 
 interface AdminsManagerTabProps {
   onAdminsCountChange?: (count: number) => void;
+  availableClasses?: string[];
 }
 
-export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps) {
+export function AdminsManagerTab({
+  onAdminsCountChange,
+  availableClasses = [],
+}: AdminsManagerTabProps) {
   const [admins, setAdmins] = useState<AdminRecordPublic[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [tableMissing, setTableMissing] = useState(false);
+  const [classesColumnMissing, setClassesColumnMissing] = useState(false);
   const [loadError, setLoadError] = useState('');
 
   // Форма добавления
   const [name, setName] = useState('');
   const [role, setRole] = useState<ManagedAdminRole>('supervisor');
   const [note, setNote] = useState('');
+  const [assignedClasses, setAssignedClasses] = useState<string[]>([]);
+  const [customClassInput, setCustomClassInput] = useState('');
   const [password, setPassword] = useState(() => generateReadablePassword());
   const [showCreatePassword, setShowCreatePassword] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
@@ -108,6 +127,8 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
   const [editName, setEditName] = useState('');
   const [editRole, setEditRole] = useState<ManagedAdminRole>('supervisor');
   const [editNote, setEditNote] = useState('');
+  const [editAssignedClasses, setEditAssignedClasses] = useState<string[]>([]);
+  const [editCustomClassInput, setEditCustomClassInput] = useState('');
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [editError, setEditError] = useState('');
 
@@ -153,6 +174,7 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
         return;
       }
       setTableMissing(Boolean(data.tableMissing));
+      setClassesColumnMissing(Boolean(data.classesColumnMissing));
       const list = (data.admins || []) as AdminRecordPublic[];
       setAdmins(list);
       onAdminsCountChange?.(list.length);
@@ -177,6 +199,13 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
       const submittedPassword = password.trim();
       const submittedName = name.trim();
       const submittedNote = note.trim();
+      const submittedClasses =
+        role === 'supervisor'
+          ? normalizeAssignedClasses([
+              ...assignedClasses,
+              ...(customClassInput.trim() ? [customClassInput] : []),
+            ])
+          : [];
 
       const res = await fetch('/api/admins', {
         method: 'POST',
@@ -185,6 +214,7 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
           name: submittedName,
           role,
           note: submittedNote,
+          assigned_classes: submittedClasses,
           password: submittedPassword,
         }),
       });
@@ -192,6 +222,7 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
 
       if (!res.ok) {
         if (data?.tableMissing) setTableMissing(true);
+        if (data?.classesColumnMissing) setClassesColumnMissing(true);
         setCreateError(data?.error || 'Не удалось добавить администратора');
         return;
       }
@@ -200,12 +231,15 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
         name: submittedName,
         role,
         note: submittedNote,
+        assigned_classes: submittedClasses,
         password: submittedPassword,
         isReset: false,
       });
       setName('');
       setNote('');
       setRole('supervisor');
+      setAssignedClasses([]);
+      setCustomClassInput('');
       setPassword(generateReadablePassword());
       await fetchAdmins();
     } catch {
@@ -236,6 +270,8 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
     setEditName(admin.name);
     setEditRole(admin.role);
     setEditNote(admin.note || '');
+    setEditAssignedClasses(normalizeAssignedClasses(admin.assigned_classes || []));
+    setEditCustomClassInput('');
     setEditError('');
   };
 
@@ -246,6 +282,14 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
     setIsSavingEdit(true);
     setEditError('');
     try {
+      const nextAssignedClasses =
+        editRole === 'supervisor'
+          ? normalizeAssignedClasses([
+              ...editAssignedClasses,
+              ...(editCustomClassInput.trim() ? [editCustomClassInput] : []),
+            ])
+          : [];
+
       const res = await fetch(`/api/admins/${editingAdmin.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -253,10 +297,12 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
           name: editName.trim(),
           role: editRole,
           note: editNote.trim(),
+          assigned_classes: nextAssignedClasses,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
+        if (data?.classesColumnMissing) setClassesColumnMissing(true);
         setEditError(data?.error || 'Не удалось сохранить изменения');
         return;
       }
@@ -298,6 +344,7 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
         name: resetTarget.name,
         role: resetTarget.role,
         note: resetTarget.note || '',
+        assigned_classes: resetTarget.assigned_classes || [],
         password: nextPwd,
         isReset: true,
       });
@@ -333,13 +380,125 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
 
   const buildInviteText = (cred: IssuedCredentials) => {
     const roleLabel = ADMIN_ROLE_LABELS[cred.role].label;
-    return [
+    const lines = [
       'Доступ в панель контроля NGS Библиотеки',
       `Ссылка для входа: ${getAdminLoginUrl()}`,
       `Имя: ${cred.name}${cred.note ? ` (${cred.note})` : ''}`,
       `Роль: ${roleLabel}`,
-      `Пароль: ${cred.password}`,
-    ].join('\n');
+    ];
+    if (cred.role === 'supervisor' && cred.assigned_classes.length > 0) {
+      lines.push(`Закреплённые классы: ${cred.assigned_classes.join(', ')}`);
+    }
+    lines.push(`Пароль: ${cred.password}`);
+    return lines.join('\n');
+  };
+
+  const toggleClassInList = (
+    cls: string,
+    list: string[],
+    setter: React.Dispatch<React.SetStateAction<string[]>>
+  ) => {
+    setter(
+      list.includes(cls)
+        ? list.filter((item) => item !== cls)
+        : normalizeAssignedClasses([...list, cls])
+    );
+  };
+
+  const addCustomClassToList = (
+    raw: string,
+    list: string[],
+    setter: React.Dispatch<React.SetStateAction<string[]>>,
+    clearInput: () => void
+  ) => {
+    const parsed = normalizeAssignedClasses(raw);
+    if (parsed.length === 0) return;
+    setter(normalizeAssignedClasses([...list, ...parsed]));
+    clearInput();
+  };
+
+  const renderClassPicker = (
+    selected: string[],
+    setSelected: React.Dispatch<React.SetStateAction<string[]>>,
+    customVal: string,
+    setCustomVal: React.Dispatch<React.SetStateAction<string>>
+  ) => {
+    const allOptions = normalizeAssignedClasses([...availableClasses, ...selected]);
+    return (
+      <div className="p-3.5 rounded-2xl bg-emerald-50/50 dark:bg-emerald-950/15 border border-emerald-200/70 dark:border-emerald-900/40 space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <label className="text-xs font-extrabold text-emerald-950 dark:text-emerald-200 flex items-center gap-1.5">
+            <GraduationCap className="w-4 h-4 text-emerald-600" />
+            <span>Закреплённые классы (доступ только к своим ученикам)</span>
+          </label>
+          {selected.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setSelected([])}
+              className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline"
+            >
+              Очистить (видит всех)
+            </button>
+          )}
+        </div>
+
+        <p className="text-[11px] text-emerald-900/80 dark:text-emerald-300/80">
+          {selected.length > 0
+            ? `Куратор увидит только учеников выбранных классов (${selected.length}): ${selected.join(', ')}.`
+            : 'Если классы не выбраны, куратор будет видеть всех учеников школы.'}
+        </p>
+
+        {allOptions.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {allOptions.map((cls) => {
+              const isSelected = selected.includes(cls);
+              return (
+                <button
+                  key={cls}
+                  type="button"
+                  onClick={() => toggleClassInList(cls, selected, setSelected)}
+                  className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border transition-all ${
+                    isSelected
+                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                      : 'bg-white dark:bg-[#16181F] text-gray-700 dark:text-gray-200 border-gray-200 dark:border-gray-700 hover:border-emerald-400'
+                  }`}
+                >
+                  {isSelected ? '✓ ' : ''}
+                  {cls}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={customVal}
+            onChange={(e) => setCustomVal(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                addCustomClassToList(customVal, selected, setSelected, () => setCustomVal(''));
+              }
+            }}
+            placeholder="Добавить класс вручную (напр. 7а или 5б, 5в)..."
+            className="flex-1 px-3 py-2 rounded-xl border border-emerald-200 dark:border-gray-700 bg-white dark:bg-[#16181F] text-xs outline-none focus:border-emerald-500"
+          />
+          <button
+            type="button"
+            onClick={() =>
+              addCustomClassToList(customVal, selected, setSelected, () => setCustomVal(''))
+            }
+            disabled={!customVal.trim()}
+            className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1 disabled:opacity-40 shrink-0"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Добавить</span>
+          </button>
+        </div>
+      </div>
+    );
   };
 
   const activeCount = admins.filter((a) => a.is_active).length;
@@ -392,6 +551,52 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
         </div>
       )}
 
+      {/* Баннер добавления колонки assigned_classes для существующей таблицы */}
+      {!tableMissing && classesColumnMissing && (
+        <div className="bg-amber-50 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-800 rounded-[28px] p-5 space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-2xl bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
+              <GraduationCap className="w-5 h-5" />
+            </div>
+            <div className="space-y-1 flex-1 min-w-0">
+              <h3 className="font-extrabold text-sm text-amber-950 dark:text-amber-200">
+                Добавьте колонку классов в Supabase, чтобы закреплять кураторов за классами
+              </h3>
+              <p className="text-xs text-amber-800 dark:text-amber-300/90 leading-relaxed">
+                Выполните этот SQL один раз в <b>Supabase Dashboard → SQL Editor</b> (также сохранён в файле{' '}
+                <code className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/50 font-mono">
+                  supabase_admins_assigned_classes.sql
+                </code>
+                ):
+              </p>
+            </div>
+          </div>
+
+          <pre className="p-3 rounded-2xl bg-white/90 dark:bg-[#14161C] border border-amber-200/80 dark:border-amber-900/50 text-[11px] font-mono text-gray-800 dark:text-gray-200 overflow-x-auto">
+            {ADD_CLASSES_COLUMN_SQL}
+          </pre>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => copyText(ADD_CLASSES_COLUMN_SQL, 'classes-sql')}
+              className="px-3.5 py-2 rounded-xl bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold inline-flex items-center gap-1.5"
+            >
+              {copiedKey === 'classes-sql' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedKey === 'classes-sql' ? 'SQL скопирован!' : 'Скопировать SQL'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={fetchAdmins}
+              className="px-3.5 py-2 rounded-xl bg-white dark:bg-[#1C1F26] border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs font-bold inline-flex items-center gap-1.5"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Проверить снова</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Карточка выданного пароля (после создания или сброса) */}
       {issuedCredentials && (
         <div className="bg-emerald-50 dark:bg-emerald-950/25 border border-emerald-200 dark:border-emerald-800 rounded-[28px] p-6 space-y-4 shadow-sm">
@@ -426,6 +631,10 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
               <div className="text-[11px] text-gray-500 font-semibold">
                 {issuedCredentials.name} • {ADMIN_ROLE_LABELS[issuedCredentials.role].label}
                 {issuedCredentials.note ? ` • ${issuedCredentials.note}` : ''}
+                {issuedCredentials.role === 'supervisor' &&
+                issuedCredentials.assigned_classes.length > 0
+                  ? ` • Классы: ${issuedCredentials.assigned_classes.join(', ')}`
+                  : ''}
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500">Пароль для входа:</span>
@@ -552,6 +761,15 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
               </button>
             </div>
           </div>
+
+          {/* Закреплённые классы для куратора */}
+          {role === 'supervisor' &&
+            renderClassPicker(
+              assignedClasses,
+              setAssignedClasses,
+              customClassInput,
+              setCustomClassInput
+            )}
 
           {/* Пароль */}
           <div>
@@ -688,6 +906,29 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
                       <p className="text-xs text-gray-600 dark:text-gray-300">{adm.note}</p>
                     )}
 
+                    {adm.role === 'supervisor' && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10.5px] font-bold text-gray-500 dark:text-gray-400 inline-flex items-center gap-1">
+                          <GraduationCap className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Классы:</span>
+                        </span>
+                        {adm.assigned_classes && adm.assigned_classes.length > 0 ? (
+                          adm.assigned_classes.map((cls) => (
+                            <span
+                              key={cls}
+                              className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200"
+                            >
+                              {cls}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300">
+                            Все классы школы
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     <div className="flex flex-wrap items-center gap-3 text-[11px] text-gray-400">
                       <span className="inline-flex items-center gap-1">
                         <Clock className="w-3 h-3" />
@@ -766,7 +1007,7 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
       {/* Модалка редактирования администратора */}
       {editingAdmin && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-[#1C1F26] w-full max-w-md rounded-[28px] p-6 shadow-2xl border border-gray-200 dark:border-gray-800 space-y-4">
+          <div className="bg-white dark:bg-[#1C1F26] w-full max-w-lg rounded-[28px] p-6 shadow-2xl border border-gray-200 dark:border-gray-800 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3">
               <h3 className="font-extrabold text-base text-gray-900 dark:text-white">
                 Редактировать администратора
@@ -816,6 +1057,14 @@ export function AdminsManagerTab({ onAdminsCountChange }: AdminsManagerTabProps)
                   <option value="admin">Полный администратор (книги, цитаты и ученики)</option>
                 </select>
               </div>
+
+              {editRole === 'supervisor' &&
+                renderClassPicker(
+                  editAssignedClasses,
+                  setEditAssignedClasses,
+                  editCustomClassInput,
+                  setEditCustomClassInput
+                )}
 
               {editError && (
                 <div className="p-3 rounded-xl bg-red-50 text-red-700 text-xs font-semibold">

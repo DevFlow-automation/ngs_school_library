@@ -1,7 +1,15 @@
 import crypto from 'crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { NextRequest, NextResponse } from 'next/server';
-import type { AdminRecordPublic, AdminRole, AdminSessionUser, ManagedAdminRole } from './adminTypes';
+import {
+  canAdminAccessClass,
+  hasClassRestrictions,
+  normalizeAssignedClasses,
+  type AdminRecordPublic,
+  type AdminRole,
+  type AdminSessionUser,
+  type ManagedAdminRole,
+} from './adminTypes';
 
 export const ADMIN_SESSION_COOKIE = 'ngs_admin_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 дней
@@ -162,8 +170,19 @@ export function getServerSupabase(): SupabaseClient {
   });
 }
 
+export function isMissingAssignedClassesColumnError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as { code?: string; message?: string; details?: string };
+  const msg = `${err.code || ''} ${err.message || ''} ${err.details || ''}`.toLowerCase();
+  return (
+    (err.code === '42703' || err.code === 'PGRST204' || msg.includes('column')) &&
+    msg.includes('assigned_classes')
+  );
+}
+
 export function isMissingAdminsTableError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
+  if (isMissingAssignedClassesColumnError(error)) return false;
   const err = error as { code?: string; message?: string; details?: string };
   const msg = `${err.code || ''} ${err.message || ''} ${err.details || ''}`.toLowerCase();
   return (
@@ -175,16 +194,18 @@ export function isMissingAdminsTableError(error: unknown): boolean {
   );
 }
 
-export function toPublicAdminRecord(row: LibraryAdminDbRow): AdminRecordPublic {
+export function toPublicAdminRecord(row: Partial<LibraryAdminDbRow> & { id: string; name: string; role: string }): AdminRecordPublic {
+  const role: ManagedAdminRole = row.role === 'admin' ? 'admin' : 'supervisor';
   return {
     id: row.id,
     name: row.name,
-    role: row.role === 'admin' ? 'admin' : 'supervisor',
+    role,
     note: row.note || '',
+    assigned_classes: role === 'supervisor' ? normalizeAssignedClasses(row.assigned_classes) : [],
     is_active: Boolean(row.is_active),
     last_login_at: row.last_login_at || null,
-    password_updated_at: row.password_updated_at,
-    created_at: row.created_at,
+    password_updated_at: String(row.password_updated_at || ''),
+    created_at: String(row.created_at || ''),
   };
 }
 
@@ -203,30 +224,105 @@ export async function getAuthenticatedAdmin(req: NextRequest): Promise<AdminSess
       name: 'Главный администратор',
       role: 'superadmin',
       note: 'Полный доступ',
+      assigned_classes: [],
     };
   }
 
   try {
     const supabase = getServerSupabase();
-    const { data, error } = await supabase
+    let data: {
+      id: string;
+      name: string;
+      role: string;
+      note: string | null;
+      assigned_classes?: string[] | null;
+      is_active: boolean;
+      password_updated_at: string | null;
+    } | null = null;
+
+    const fullRes = await supabase
       .from('library_admins')
-      .select('id, name, role, note, is_active, password_updated_at')
+      .select('id, name, role, note, assigned_classes, is_active, password_updated_at')
       .eq('id', payload.id)
       .maybeSingle();
 
-    if (error || !data) return null;
+    if (fullRes.error && isMissingAssignedClassesColumnError(fullRes.error)) {
+      const fallbackRes = await supabase
+        .from('library_admins')
+        .select('id, name, role, note, is_active, password_updated_at')
+        .eq('id', payload.id)
+        .maybeSingle();
+      if (fallbackRes.error || !fallbackRes.data) return null;
+      data = fallbackRes.data;
+    } else if (fullRes.error || !fullRes.data) {
+      return null;
+    } else {
+      data = fullRes.data;
+    }
+
     if (!data.is_active) return null;
     if (String(data.password_updated_at || '') !== payload.pwdVer) return null;
 
+    const role: ManagedAdminRole = data.role === 'admin' ? 'admin' : 'supervisor';
     return {
       id: data.id,
       name: data.name,
-      role: data.role === 'admin' ? 'admin' : 'supervisor',
+      role,
       note: data.note || '',
+      assigned_classes: role === 'supervisor' ? normalizeAssignedClasses(data.assigned_classes) : [],
     };
   } catch {
     return null;
   }
+}
+
+export async function verifyAdminCanAccessStudent(
+  admin: AdminSessionUser,
+  studentId: string
+): Promise<{
+  allowed: boolean;
+  student?: { id: string; full_name: string; grade_class: string } | null;
+  errorStatus?: number;
+  errorMessage?: string;
+}> {
+  if (!hasClassRestrictions(admin)) {
+    return { allowed: true };
+  }
+
+  const supabase = getServerSupabase();
+  const { data, error } = await supabase
+    .from('students')
+    .select('id, full_name, grade_class')
+    .eq('id', studentId)
+    .maybeSingle();
+
+  if (error) {
+    return {
+      allowed: false,
+      errorStatus: 500,
+      errorMessage: 'Ошибка проверки доступа к ученику',
+    };
+  }
+
+  if (!data) {
+    return {
+      allowed: false,
+      student: null,
+      errorStatus: 404,
+      errorMessage: 'Ученик не найден',
+    };
+  }
+
+  if (!canAdminAccessClass(admin, data.grade_class)) {
+    return {
+      allowed: false,
+      student: data,
+      errorStatus: 403,
+      errorMessage: 'Нет доступа к ученику из другого класса',
+    };
+  }
+
+  return { allowed: true, student: data };
 }
 
 export async function hasPasswordCollision(

@@ -19,6 +19,7 @@ import {
   Edit3,
   ExternalLink,
   Filter,
+  GraduationCap,
   MessageSquare,
   Plus,
   RefreshCw,
@@ -142,6 +143,7 @@ interface AdminStudentsTabProps {
   messagesByStudent: Record<string, AdminStudentMessageItem[]>;
   adjustmentsByStudent: Record<string, StudentPointAdjustment[]>;
   messageTemplates: string[];
+  restrictedClasses?: string[];
   onRefresh: () => Promise<void> | void;
   onOpenMessageModal: (
     student: AdminStudentRow,
@@ -183,12 +185,14 @@ export function AdminStudentsTab({
   messagesByStudent,
   adjustmentsByStudent,
   messageTemplates,
+  restrictedClasses,
   onRefresh,
   onOpenMessageModal,
   onDeleteStudentMessage,
   onOpenProgressEditor,
   onResetBookProgress,
 }: AdminStudentsTabProps) {
+  const hasRestrictedClasses = Boolean(restrictedClasses && restrictedClasses.length > 0);
   // Поиск, фильтры и сортировка
   const [searchQuery, setSearchQuery] = useState('');
   const [classFilter, setClassFilter] = useState<string>('all');
@@ -535,7 +539,7 @@ export function AdminStudentsTab({
   const openEditStudentModal = (st: AdminStudentRow) => {
     setEditingStudent(st);
     setEditFullName(st.full_name);
-    setEditGradeClass(st.grade_class);
+    setEditGradeClass(normalizeStudentClass(st.grade_class));
     setEditStudentError('');
   };
 
@@ -604,6 +608,31 @@ export function AdminStudentsTab({
 
   return (
     <div className="bg-white dark:bg-[#1C1F26] p-4 sm:p-5 rounded-[28px] shadow-sm border border-gray-200/80 dark:border-gray-800 space-y-3.5">
+      {/* Баннер закреплённых классов куратора */}
+      {hasRestrictedClasses && restrictedClasses && (
+        <div className="px-3.5 py-2 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/25 border border-emerald-200/80 dark:border-emerald-900/40 flex flex-wrap items-center gap-2 text-xs">
+          <span className="inline-flex items-center gap-1.5 font-extrabold text-emerald-900 dark:text-emerald-200">
+            <GraduationCap className="w-4 h-4 text-emerald-600" />
+            <span>
+              {restrictedClasses.length === 1 ? 'Ваш класс:' : 'Ваши закреплённые классы:'}
+            </span>
+          </span>
+          <div className="flex flex-wrap items-center gap-1">
+            {restrictedClasses.map((cls) => (
+              <span
+                key={cls}
+                className="px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[10.5px] font-bold"
+              >
+                {cls}
+              </span>
+            ))}
+          </div>
+          <span className="text-[11px] text-emerald-800/80 dark:text-emerald-300/80 sm:ml-auto">
+            Отображаются только ученики ваших классов
+          </span>
+        </div>
+      )}
+
       {/* Компактная строка KPI-метрик (быстрые фильтры) */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
         <button
@@ -1718,16 +1747,31 @@ export function AdminStudentsTab({
                 <label className="text-xs font-bold text-gray-600 dark:text-gray-400">
                   Класс *
                 </label>
-                <input
-                  type="text"
-                  required
-                  minLength={1}
-                  maxLength={20}
-                  value={editGradeClass}
-                  onChange={(e) => setEditGradeClass(e.target.value)}
-                  placeholder="Например, 7А или 7 «А»"
-                  className="mt-1 w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent text-sm outline-none focus:border-indigo-500"
-                />
+                {hasRestrictedClasses && restrictedClasses ? (
+                  <select
+                    required
+                    value={editGradeClass}
+                    onChange={(e) => setEditGradeClass(e.target.value)}
+                    className="mt-1 w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#16181F] text-sm outline-none focus:border-indigo-500"
+                  >
+                    {restrictedClasses.map((cls) => (
+                      <option key={cls} value={cls}>
+                        {cls}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    required
+                    minLength={1}
+                    maxLength={20}
+                    value={editGradeClass}
+                    onChange={(e) => setEditGradeClass(e.target.value)}
+                    placeholder="Например, 7А или 7 «А»"
+                    className="mt-1 w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent text-sm outline-none focus:border-indigo-500"
+                  />
+                )}
               </div>
 
               {(normalizedEditPreviewName || normalizedEditPreviewClass) && (

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedAdmin, getServerSupabase } from '@/lib/adminAuth';
+import { canAdminAccessClass, hasClassRestrictions } from '@/lib/adminTypes';
 import { normalizeStudentClass, normalizeStudentName } from '@/lib/studentNormalize';
 
 export const dynamic = 'force-dynamic';
@@ -66,6 +67,23 @@ export async function PATCH(
     if (fetchError) throw fetchError;
     if (!existing) {
       return NextResponse.json({ ok: false, error: 'Ученик не найден' }, { status: 404 });
+    }
+
+    if (!canAdminAccessClass(admin, existing.grade_class)) {
+      return NextResponse.json(
+        { ok: false, error: 'Нет доступа к ученику из другого класса' },
+        { status: 403 }
+      );
+    }
+
+    if (hasClassRestrictions(admin) && !canAdminAccessClass(admin, nextClass)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Вы можете указывать только закреплённые за вами классы: ${admin.assigned_classes.join(', ')}`,
+        },
+        { status: 403 }
+      );
     }
 
     const { data: duplicate, error: dupError } = await supabase
@@ -145,6 +163,13 @@ export async function DELETE(
     if (fetchError) throw fetchError;
     if (!existing) {
       return NextResponse.json({ ok: false, error: 'Ученик не найден' }, { status: 404 });
+    }
+
+    if (!canAdminAccessClass(admin, existing.grade_class)) {
+      return NextResponse.json(
+        { ok: false, error: 'Нет доступа к ученику из другого класса' },
+        { status: 403 }
+      );
     }
 
     // Очищаем связанные записи на случай, если в БД нет ON DELETE CASCADE

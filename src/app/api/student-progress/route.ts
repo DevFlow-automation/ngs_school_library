@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthenticatedAdmin, getServerSupabase } from '@/lib/adminAuth';
+import {
+  getAuthenticatedAdmin,
+  getServerSupabase,
+  verifyAdminCanAccessStudent,
+} from '@/lib/adminAuth';
 import { formatAdminSenderName } from '@/lib/adminTypes';
 
 export const dynamic = 'force-dynamic';
@@ -47,6 +51,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { ok: false, error: 'Не указаны ученик или книга' },
         { status: 400 }
+      );
+    }
+
+    const access = await verifyAdminCanAccessStudent(admin, studentId);
+    if (!access.allowed) {
+      return NextResponse.json(
+        { ok: false, error: access.errorMessage || 'Нет доступа к этому ученику' },
+        { status: access.errorStatus || 403 }
       );
     }
 
@@ -193,6 +205,17 @@ export async function DELETE(req: NextRequest) {
       query = query.eq('student_id', studentId).eq('book_id', bookId);
     }
     const { data: existingRow } = await query.maybeSingle();
+
+    const targetStudentId = String(existingRow?.student_id || studentId || '').trim();
+    if (targetStudentId) {
+      const access = await verifyAdminCanAccessStudent(admin, targetStudentId);
+      if (!access.allowed) {
+        return NextResponse.json(
+          { ok: false, error: access.errorMessage || 'Нет доступа к этому ученику' },
+          { status: access.errorStatus || 403 }
+        );
+      }
+    }
 
     const targetId = existingRow?.id || progressId;
 

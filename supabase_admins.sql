@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS library_admins (
   name TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'supervisor' CHECK (role IN ('supervisor', 'admin')),
   note TEXT NOT NULL DEFAULT '',
+  assigned_classes TEXT[] NOT NULL DEFAULT '{}',
   password_hash TEXT NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   last_login_at TIMESTAMPTZ,

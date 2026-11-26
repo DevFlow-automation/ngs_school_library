@@ -5,10 +5,12 @@ import {
   hashAdminPassword,
   hasPasswordCollision,
   isMissingAdminsTableError,
+  isMissingAssignedClassesColumnError,
   isValidManagedRole,
   toPublicAdminRecord,
   type LibraryAdminDbRow,
 } from '@/lib/adminAuth';
+import { normalizeAssignedClasses } from '@/lib/adminTypes';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,26 +43,50 @@ export async function GET(req: NextRequest) {
 
   try {
     const supabase = getServerSupabase();
-    const { data, error } = await supabase
+    let classesColumnMissing = false;
+    let rows: LibraryAdminDbRow[] = [];
+
+    const fullRes = await supabase
       .from('library_admins')
-      .select('id, name, role, note, is_active, last_login_at, password_updated_at, created_at')
+      .select('id, name, role, note, assigned_classes, is_active, last_login_at, password_updated_at, created_at')
       .order('created_at', { ascending: false });
 
-    if (error) {
-      if (isMissingAdminsTableError(error)) {
+    if (fullRes.error) {
+      if (isMissingAssignedClassesColumnError(fullRes.error)) {
+        classesColumnMissing = true;
+        const fallbackRes = await supabase
+          .from('library_admins')
+          .select('id, name, role, note, is_active, last_login_at, password_updated_at, created_at')
+          .order('created_at', { ascending: false });
+
+        if (fallbackRes.error) {
+          if (isMissingAdminsTableError(fallbackRes.error)) {
+            return NextResponse.json(
+              { ok: true, tableMissing: true, classesColumnMissing: false, admins: [] },
+              { headers: { 'Cache-Control': 'no-store' } }
+            );
+          }
+          throw fallbackRes.error;
+        }
+        rows = (fallbackRes.data || []) as LibraryAdminDbRow[];
+      } else if (isMissingAdminsTableError(fullRes.error)) {
         return NextResponse.json(
-          { ok: true, tableMissing: true, admins: [] },
+          { ok: true, tableMissing: true, classesColumnMissing: false, admins: [] },
           { headers: { 'Cache-Control': 'no-store' } }
         );
+      } else {
+        throw fullRes.error;
       }
-      throw error;
+    } else {
+      rows = (fullRes.data || []) as LibraryAdminDbRow[];
     }
 
     return NextResponse.json(
       {
         ok: true,
         tableMissing: false,
-        admins: (data || []).map((row) => toPublicAdminRecord(row as LibraryAdminDbRow)),
+        classesColumnMissing,
+        admins: rows.map((row) => toPublicAdminRecord(row)),
       },
       { headers: { 'Cache-Control': 'no-store' } }
     );
@@ -83,6 +109,8 @@ export async function POST(req: NextRequest) {
     const role = isValidManagedRole(body?.role) ? body.role : 'supervisor';
     const note = typeof body?.note === 'string' ? body.note.trim().slice(0, 120) : '';
     const password = typeof body?.password === 'string' ? body.password.trim() : '';
+    const assignedClasses =
+      role === 'supervisor' ? normalizeAssignedClasses(body?.assigned_classes) : [];
 
     if (name.length < 2 || name.length > 80) {
       return NextResponse.json(
@@ -123,23 +151,56 @@ export async function POST(req: NextRequest) {
     const nowIso = new Date().toISOString();
 
     const supabase = getServerSupabase();
-    const { data, error } = await supabase
+    let createdRow: Partial<LibraryAdminDbRow> & { id: string; name: string; role: string };
+
+    const fullInsert = await supabase
       .from('library_admins')
       .insert([
         {
           name,
           role,
           note,
+          assigned_classes: assignedClasses,
           password_hash: passwordHash,
           is_active: true,
           password_updated_at: nowIso,
         },
       ])
-      .select('id, name, role, note, is_active, last_login_at, password_updated_at, created_at')
+      .select('id, name, role, note, assigned_classes, is_active, last_login_at, password_updated_at, created_at')
       .single();
 
-    if (error) {
-      if (isMissingAdminsTableError(error)) {
+    if (fullInsert.error) {
+      if (isMissingAssignedClassesColumnError(fullInsert.error)) {
+        if (assignedClasses.length > 0) {
+          return NextResponse.json(
+            {
+              ok: false,
+              classesColumnMissing: true,
+              error:
+                'Чтобы назначать классы кураторам, выполните SQL из файла supabase_admins_assigned_classes.sql в Supabase.',
+            },
+            { status: 503 }
+          );
+        }
+
+        const fallbackInsert = await supabase
+          .from('library_admins')
+          .insert([
+            {
+              name,
+              role,
+              note,
+              password_hash: passwordHash,
+              is_active: true,
+              password_updated_at: nowIso,
+            },
+          ])
+          .select('id, name, role, note, is_active, last_login_at, password_updated_at, created_at')
+          .single();
+
+        if (fallbackInsert.error) throw fallbackInsert.error;
+        createdRow = fallbackInsert.data as LibraryAdminDbRow;
+      } else if (isMissingAdminsTableError(fullInsert.error)) {
         return NextResponse.json(
           {
             ok: false,
@@ -148,12 +209,15 @@ export async function POST(req: NextRequest) {
           },
           { status: 503 }
         );
+      } else {
+        throw fullInsert.error;
       }
-      throw error;
+    } else {
+      createdRow = fullInsert.data as LibraryAdminDbRow;
     }
 
     return NextResponse.json(
-      { ok: true, admin: toPublicAdminRecord(data as LibraryAdminDbRow) },
+      { ok: true, admin: toPublicAdminRecord(createdRow) },
       { status: 201 }
     );
   } catch (err) {

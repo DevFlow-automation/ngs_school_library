@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthenticatedAdmin, getServerSupabase } from '@/lib/adminAuth';
+import {
+  getAuthenticatedAdmin,
+  getServerSupabase,
+  verifyAdminCanAccessStudent,
+} from '@/lib/adminAuth';
 import { formatAdminSenderName } from '@/lib/adminTypes';
 import {
   isMissingPointAdjustmentsTableError,
@@ -31,6 +35,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { ok: false, error: 'Не указан ученик' },
         { status: 400 }
+      );
+    }
+
+    const access = await verifyAdminCanAccessStudent(admin, studentId);
+    if (!access.allowed) {
+      return NextResponse.json(
+        { ok: false, error: access.errorMessage || 'Нет доступа к этому ученику' },
+        { status: access.errorStatus || 403 }
       );
     }
 

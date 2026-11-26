@@ -22,7 +22,10 @@ import { AdminProgressEditorModal } from '@/components/AdminProgressEditorModal'
 import { saveResetBackup, type AdminProgressRow } from '@/lib/progressBackups';
 import {
   ADMIN_ROLE_LABELS,
+  canAdminAccessClass,
   formatAdminSenderName,
+  hasClassRestrictions,
+  normalizeAssignedClasses,
   type AdminSessionUser,
 } from '@/lib/adminTypes';
 import type { StudentPointAdjustment } from '@/lib/pointAdjustments';
@@ -91,6 +94,7 @@ export default function AdminDashboardPage() {
   const isSuperadmin = currentAdmin?.role === 'superadmin';
   const canManageLibrary =
     currentAdmin?.role === 'superadmin' || currentAdmin?.role === 'admin';
+  const isClassRestrictedCurator = hasClassRestrictions(currentAdmin);
 
   // Вкладки
   const [activeMode, setActiveMode] = useState<'manage' | 'add' | 'quotes' | 'students' | 'admins'>('manage');
@@ -225,6 +229,10 @@ export default function AdminDashboardPage() {
   const handleSendStudentMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!messageTarget || !messageDraft.trim()) return;
+    if (!canAdminAccessClass(currentAdmin, messageTarget.student.grade_class)) {
+      setMessageError('Нет доступа к ученику из другого класса.');
+      return;
+    }
 
     setIsSendingMessage(true);
     setMessageError('');
@@ -414,6 +422,16 @@ export default function AdminDashboardPage() {
     bookCategoryFilter !== 'all' ||
     bookCurriculumFilter !== 'all' ||
     bookSortBy !== 'newest';
+
+  const allStudentClasses = useMemo(
+    () => normalizeAssignedClasses(studentsList.map((s) => s.grade_class)),
+    [studentsList]
+  );
+
+  const visibleStudents = useMemo(() => {
+    if (!isClassRestrictedCurator) return studentsList;
+    return studentsList.filter((st) => canAdminAccessClass(currentAdmin, st.grade_class));
+  }, [studentsList, isClassRestrictedCurator, currentAdmin]);
 
   const resetBookFilters = () => {
     setSearchQuery('');
@@ -750,10 +768,15 @@ export default function AdminDashboardPage() {
             <p className="text-xs text-gray-500 mt-1">
               Вы вошли как: <b className="text-gray-700 dark:text-gray-200">{currentAdmin?.name}</b>
               {currentAdmin?.note && currentAdmin.role !== 'superadmin' ? ` (${currentAdmin.note})` : ''}
+              {isClassRestrictedCurator && currentAdmin?.assigned_classes?.length
+                ? ` • Классы: ${currentAdmin.assigned_classes.join(', ')}`
+                : ''}
               {' • '}
               {canManageLibrary
-                ? `Книг: ${booksList.length} • Цитат: ${quotesList.length} • Учеников: ${studentsList.length}`
-                : `Учеников: ${studentsList.length}`}
+                ? `Книг: ${booksList.length} • Цитат: ${quotesList.length} • Учеников: ${visibleStudents.length}`
+                : isClassRestrictedCurator
+                ? `Моих учеников: ${visibleStudents.length}`
+                : `Учеников: ${visibleStudents.length}`}
             </p>
           </div>
 
@@ -807,7 +830,7 @@ export default function AdminDashboardPage() {
               }`}
             >
               <Users className="w-4 h-4" />
-              Ученики ({studentsList.length})
+              {isClassRestrictedCurator ? `Мои ученики (${visibleStudents.length})` : `Ученики (${visibleStudents.length})`}
             </button>
 
             {isSuperadmin && (
@@ -1216,7 +1239,7 @@ export default function AdminDashboardPage() {
         {/* ВКЛАДКА 4: ТАБЛИЦА УЧЕНИКОВ И КОМПАКТНЫЙ ПРОГРЕСС */}
         {activeMode === 'students' && (
           <AdminStudentsTab
-            students={studentsList}
+            students={visibleStudents}
             books={booksList.map((b) => ({
               id: b.id,
               title: b.title,
@@ -1225,6 +1248,9 @@ export default function AdminDashboardPage() {
             messagesByStudent={messagesByStudent}
             adjustmentsByStudent={adjustmentsByStudent}
             messageTemplates={MESSAGE_TEMPLATES}
+            restrictedClasses={
+              isClassRestrictedCurator ? currentAdmin?.assigned_classes : undefined
+            }
             onRefresh={fetchActivity}
             onOpenMessageModal={openMessageModal}
             onDeleteStudentMessage={handleDeleteStudentMessage}
@@ -1237,7 +1263,10 @@ export default function AdminDashboardPage() {
 
         {/* ВКЛАДКА 5: УПРАВЛЕНИЕ АДМИНИСТРАТОРАМИ (ТОЛЬКО ГЛАВНЫЙ АДМИН) */}
         {isSuperadmin && activeMode === 'admins' && (
-          <AdminsManagerTab onAdminsCountChange={setAdminsCount} />
+          <AdminsManagerTab
+            onAdminsCountChange={setAdminsCount}
+            availableClasses={allStudentClasses}
+          />
         )}
 
       </div>

@@ -39,7 +39,9 @@ import {
 import { AVATAR_RARITY_META, getAvatarsForAgeGroup } from '@/lib/avatars';
 import {
   ADMIN_ROLE_LABELS,
+  canAdminAccessClass,
   formatAdminSenderName,
+  hasClassRestrictions,
   type AdminSessionUser,
 } from '@/lib/adminTypes';
 import {
@@ -144,6 +146,7 @@ export default function AdminStudentProfilePage() {
   const [isCheckingAuth, setIsCheckingAuth] = useState(false);
 
   const isAuthorized = Boolean(currentAdmin);
+  const isClassRestrictedCurator = hasClassRestrictions(currentAdmin);
 
   const [student, setStudent] = useState<StudentDetail | null>(null);
   const [booksMap, setBooksMap] = useState<Record<string, BookInfo>>({});
@@ -576,7 +579,7 @@ export default function AdminStudentProfilePage() {
   const openEditStudentModal = () => {
     if (!student) return;
     setEditStudentName(student.full_name);
-    setEditStudentClass(student.grade_class);
+    setEditStudentClass(normalizeStudentClass(student.grade_class));
     setEditStudentError('');
     setIsEditStudentOpen(true);
   };
@@ -702,6 +705,10 @@ export default function AdminStudentProfilePage() {
     [progressRows]
   );
 
+  const isAccessDenied = Boolean(
+    student && currentAdmin && !canAdminAccessClass(currentAdmin, student.grade_class)
+  );
+
   if (isBootingAuth) {
     return (
       <div className="min-h-screen bg-[#F8F9FE] dark:bg-[#111318] flex items-center justify-center p-4">
@@ -768,7 +775,7 @@ export default function AdminStudentProfilePage() {
           </Link>
 
           <div className="flex flex-wrap items-center gap-2">
-            {student && (
+            {student && !isAccessDenied && (
               <>
                 <button
                   type="button"
@@ -816,6 +823,25 @@ export default function AdminStudentProfilePage() {
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#3F51B5] text-white text-xs font-bold"
             >
               Вернуться к списку
+            </Link>
+          </div>
+        ) : isAccessDenied ? (
+          <div className="bg-white dark:bg-[#1C1F26] rounded-[24px] p-12 text-center space-y-3 border border-red-200/80 dark:border-red-900/50">
+            <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-950/50 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto">
+              <Lock className="w-6 h-6" />
+            </div>
+            <p className="text-sm font-extrabold text-gray-900 dark:text-white">
+              Доступ к этому ученику ограничен
+            </p>
+            <p className="text-xs text-gray-500 max-w-md mx-auto">
+              Этот ученик учится в другом классе. За вашим аккаунтом закреплены классы:{' '}
+              <b>{currentAdmin?.assigned_classes?.join(', ')}</b>.
+            </p>
+            <Link
+              href="/admin/load?tab=students"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#3F51B5] text-white text-xs font-bold"
+            >
+              Вернуться к моим ученикам
             </Link>
           </div>
         ) : (
@@ -1865,15 +1891,30 @@ export default function AdminStudentProfilePage() {
                 <label className="text-xs font-bold text-gray-600 dark:text-gray-400">
                   Класс *
                 </label>
-                <input
-                  type="text"
-                  required
-                  minLength={1}
-                  maxLength={20}
-                  value={editStudentClass}
-                  onChange={(e) => setEditStudentClass(e.target.value)}
-                  className="mt-1 w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent text-sm outline-none focus:border-indigo-500"
-                />
+                {isClassRestrictedCurator && currentAdmin?.assigned_classes?.length ? (
+                  <select
+                    required
+                    value={editStudentClass}
+                    onChange={(e) => setEditStudentClass(e.target.value)}
+                    className="mt-1 w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#16181F] text-sm outline-none focus:border-indigo-500"
+                  >
+                    {currentAdmin.assigned_classes.map((cls) => (
+                      <option key={cls} value={cls}>
+                        {cls}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    required
+                    minLength={1}
+                    maxLength={20}
+                    value={editStudentClass}
+                    onChange={(e) => setEditStudentClass(e.target.value)}
+                    className="mt-1 w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent text-sm outline-none focus:border-indigo-500"
+                  />
+                )}
               </div>
 
               <div className="px-3 py-2 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/50 text-[11px] text-indigo-800 dark:text-indigo-200">
