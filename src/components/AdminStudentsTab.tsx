@@ -1004,6 +1004,14 @@ export function AdminStudentsTab({
                       (b.progress_percent || 0) - (a.progress_percent || 0) ||
                       Number(b.reading_seconds || 0) - Number(a.reading_seconds || 0)
                   );
+                  const focusBookRow =
+                    bookFilter !== 'all'
+                      ? (st.reading_progress || []).find((r) => r.book_id === bookFilter) ||
+                        item.latestBookRow
+                      : item.latestBookRow;
+                  const focusBookTitle = focusBookRow
+                    ? booksById[focusBookRow.book_id]?.title || focusBookRow.book_id
+                    : null;
 
                   return (
                     <React.Fragment key={st.id}>
@@ -1098,7 +1106,7 @@ export function AdminStudentsTab({
                         </td>
 
                         {/* Прогресс чтения */}
-                        <td className="py-2.5 px-2.5 align-middle min-w-[210px] max-w-[270px]">
+                        <td className="py-2.5 px-2.5 align-middle min-w-[240px] max-w-[320px]">
                           {item.booksCount > 0 ? (
                             <div className="space-y-1">
                               <div className="flex items-center gap-2">
@@ -1128,16 +1136,20 @@ export function AdminStudentsTab({
                                   )}
                                 </span>
                               </div>
-                              {item.latestBookRow && (
+                              {focusBookRow && (
                                 <div
-                                  className="text-[10.5px] text-gray-500 dark:text-gray-400 truncate"
-                                  title={`${item.latestBookTitle} — Глава ${item.latestBookRow.current_chapter + 1}, стр. ${item.latestBookRow.current_page + 1} (${item.latestBookRow.progress_percent}%)`}
+                                  className="flex items-center gap-1.5 text-[10.5px] text-gray-500 dark:text-gray-400 min-w-0"
+                                  title={`${focusBookTitle} — Глава ${focusBookRow.current_chapter + 1}, стр. ${focusBookRow.current_page + 1} (${focusBookRow.progress_percent}%)`}
                                 >
-                                  <span className="text-indigo-600 dark:text-indigo-400 font-semibold">
-                                    {item.latestBookTitle}
-                                  </span>{' '}
-                                  <span className="font-mono">
-                                    ({item.latestBookRow.progress_percent}%)
+                                  <span className="text-indigo-600 dark:text-indigo-400 font-semibold truncate">
+                                    {focusBookTitle}
+                                  </span>
+                                  <span className="px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-mono font-bold text-[10px] shrink-0">
+                                    Гл. {focusBookRow.current_chapter + 1}, стр.{' '}
+                                    {focusBookRow.current_page + 1}
+                                  </span>
+                                  <span className="font-mono text-[10px] text-gray-500 dark:text-gray-400 shrink-0">
+                                    {focusBookRow.progress_percent}%
                                   </span>
                                 </div>
                               )}
