@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { GradeFilter, CategoryFilter, SortOption, ReaderTheme, ReaderFont } from '@/types/book';
 import { evaluateBookCompletion } from '@/lib/readingMetrics';
 import { sumPointAdjustments, type StudentPointAdjustment } from '@/lib/pointAdjustments';
+import { normalizeStudentClass, normalizeStudentName } from '@/lib/studentNormalize';
 
 export interface StudentProfile {
   id: string;
@@ -101,30 +102,6 @@ async function upsertProgressToSupabase(payload: {
   }
 }
 
-const LATIN_TO_CYRILLIC: Record<string, string> = {
-  A: 'А', B: 'В', C: 'С', E: 'Е', H: 'Н', K: 'К', M: 'М', O: 'О', P: 'Р', T: 'Т', X: 'Х',
-};
-
-function normalizeClass(raw: string): string {
-  const cleaned = raw
-    .toUpperCase()
-    .replace(/[^0-9А-ЯЁA-Z]/g, '')
-    .replace(/[ABCEHKMOPTX]/g, (ch) => LATIN_TO_CYRILLIC[ch] || ch);
-
-  const match = cleaned.match(/^(\d{1,2})([А-ЯЁ]?)$/);
-  if (!match) return raw.trim();
-  return match[2] ? `${match[1]} «${match[2]}»` : match[1];
-}
-
-function normalizeName(raw: string): string {
-  return raw
-    .trim()
-    .replace(/\s+/g, ' ')
-    .split(' ')
-    .map((word) => (word ? word[0].toUpperCase() + word.slice(1).toLowerCase() : ''))
-    .join(' ');
-}
-
 interface ReadingState {
   student: StudentProfile | null;
   isLoginModalOpen: boolean;
@@ -201,8 +178,8 @@ export const useReadingStore = create<ReadingState>()(
       setLoginModalOpen: (open) => set({ isLoginModalOpen: open }),
 
       loginStudent: async (fullName, gradeClass) => {
-        const cleanName = normalizeName(fullName);
-        const cleanClass = normalizeClass(gradeClass);
+        const cleanName = normalizeStudentName(fullName);
+        const cleanClass = normalizeStudentClass(gradeClass);
         if (!cleanName || !cleanClass) return;
 
         let { data: existing } = await supabase

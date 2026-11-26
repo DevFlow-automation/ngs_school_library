@@ -4,8 +4,9 @@ export const dynamic = 'force-dynamic';
 
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { normalizeStudentClass, normalizeStudentName } from '@/lib/studentNormalize';
 import { StudentAvatar } from '@/components/StudentAvatar';
 import { AdminProgressEditorModal } from '@/components/AdminProgressEditorModal';
 import {
@@ -66,6 +67,7 @@ import {
   RotateCcw,
   Plus,
   Sliders,
+  X,
 } from 'lucide-react';
 
 interface ProgressRow {
@@ -131,6 +133,7 @@ const QUICK_POINTS_AMOUNTS = [10, 25, 50, 100, 250, 500];
 
 export default function AdminStudentProfilePage() {
   const params = useParams();
+  const router = useRouter();
   const studentId = Array.isArray(params?.id) ? params.id[0] : String(params?.id || '');
 
   // Авторизация админа (общая с /admin/load)
@@ -178,6 +181,17 @@ export default function AdminStudentProfilePage() {
   const [adjustError, setAdjustError] = useState('');
   const [adjustSuccess, setAdjustSuccess] = useState('');
   const [deletingAdjId, setDeletingAdjId] = useState<string | null>(null);
+
+  // Редактирование и удаление самого ученика
+  const [isEditStudentOpen, setIsEditStudentOpen] = useState(false);
+  const [editStudentName, setEditStudentName] = useState('');
+  const [editStudentClass, setEditStudentClass] = useState('');
+  const [isSavingStudent, setIsSavingStudent] = useState(false);
+  const [editStudentError, setEditStudentError] = useState('');
+
+  const [isDeleteStudentOpen, setIsDeleteStudentOpen] = useState(false);
+  const [isDeletingStudent, setIsDeletingStudent] = useState(false);
+  const [deleteStudentError, setDeleteStudentError] = useState('');
 
   const loadStudentData = useCallback(async () => {
     if (!studentId) return;
@@ -559,6 +573,67 @@ export default function AdminStudentProfilePage() {
     setResetBackups(getResetBackupsForStudent(studentId));
   };
 
+  const openEditStudentModal = () => {
+    if (!student) return;
+    setEditStudentName(student.full_name);
+    setEditStudentClass(student.grade_class);
+    setEditStudentError('');
+    setIsEditStudentOpen(true);
+  };
+
+  const handleSaveStudentEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!student) return;
+
+    setIsSavingStudent(true);
+    setEditStudentError('');
+    try {
+      const res = await fetch(`/api/students/${student.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full_name: editStudentName,
+          grade_class: editStudentClass,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setEditStudentError(data?.error || 'Не удалось обновить данные ученика.');
+        return;
+      }
+
+      setIsEditStudentOpen(false);
+      await loadStudentData();
+    } catch {
+      setEditStudentError('Ошибка сети при сохранении данных ученика.');
+    } finally {
+      setIsSavingStudent(false);
+    }
+  };
+
+  const handleConfirmDeleteStudent = async () => {
+    if (!student) return;
+
+    setIsDeletingStudent(true);
+    setDeleteStudentError('');
+    try {
+      const res = await fetch(`/api/students/${student.id}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setDeleteStudentError(data?.error || 'Не удалось удалить ученика.');
+        return;
+      }
+
+      router.push('/admin/load?tab=students');
+    } catch {
+      setDeleteStudentError('Ошибка сети при удалении ученика.');
+    } finally {
+      setIsDeletingStudent(false);
+    }
+  };
+
   const progressRows = useMemo(() => {
     const rows = student?.reading_progress || [];
     return [...rows].sort(
@@ -692,14 +767,41 @@ export default function AdminStudentProfilePage() {
             <span>К списку учеников</span>
           </Link>
 
-          <button
-            type="button"
-            onClick={loadStudentData}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white dark:bg-[#1C1F26] border border-gray-200 dark:border-gray-800 text-xs font-bold text-gray-700 dark:text-gray-200 hover:border-indigo-500 transition-colors"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-            <span>Обновить</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {student && (
+              <>
+                <button
+                  type="button"
+                  onClick={openEditStudentModal}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white dark:bg-[#1C1F26] border border-gray-200 dark:border-gray-800 text-xs font-bold text-gray-700 dark:text-gray-200 hover:border-indigo-500 transition-colors"
+                  title="Изменить ФИО или класс ученика"
+                >
+                  <Edit3 className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Изменить</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteStudentError('');
+                    setIsDeleteStudentOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-xs font-bold text-red-600 dark:text-red-400 hover:bg-red-100 transition-colors"
+                  title="Удалить ученика из базы"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Удалить</span>
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={loadStudentData}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white dark:bg-[#1C1F26] border border-gray-200 dark:border-gray-800 text-xs font-bold text-gray-700 dark:text-gray-200 hover:border-indigo-500 transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+              <span>Обновить</span>
+            </button>
+          </div>
         </div>
 
         {isLoading ? (
@@ -1719,6 +1821,143 @@ export default function AdminStudentProfilePage() {
           onClose={() => setProgressEditorState({ open: false, row: null })}
           onSaved={loadStudentData}
         />
+      )}
+
+      {isEditStudentOpen && student && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#1C1F26] w-full max-w-md rounded-[28px] p-6 shadow-2xl border border-gray-200 dark:border-gray-800 space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3">
+              <div>
+                <h3 className="font-extrabold text-base text-gray-900 dark:text-white flex items-center gap-2">
+                  <Edit3 className="w-4 h-4 text-[#3F51B5]" />
+                  <span>Редактировать ученика</span>
+                </h3>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  Весь прогресс чтения, баллы и сообщения сохранятся
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditStudentOpen(false)}
+                className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-white/10"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveStudentEdit} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-gray-600 dark:text-gray-400">
+                  ФИО ученика *
+                </label>
+                <input
+                  type="text"
+                  required
+                  minLength={2}
+                  maxLength={100}
+                  value={editStudentName}
+                  onChange={(e) => setEditStudentName(e.target.value)}
+                  className="mt-1 w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent text-sm outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-gray-600 dark:text-gray-400">
+                  Класс *
+                </label>
+                <input
+                  type="text"
+                  required
+                  minLength={1}
+                  maxLength={20}
+                  value={editStudentClass}
+                  onChange={(e) => setEditStudentClass(e.target.value)}
+                  className="mt-1 w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent text-sm outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="px-3 py-2 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/50 text-[11px] text-indigo-800 dark:text-indigo-200">
+                Сохранится в формате входа:{' '}
+                <b>{normalizeStudentName(editStudentName) || '—'}</b> •{' '}
+                <b>{normalizeStudentClass(editStudentClass) || '—'}</b>
+              </div>
+
+              {editStudentError && (
+                <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 text-xs font-semibold">
+                  {editStudentError}
+                </div>
+              )}
+
+              <div className="flex gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsEditStudentOpen(false)}
+                  className="flex-1 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 text-xs font-bold"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    isSavingStudent ||
+                    normalizeStudentName(editStudentName).length < 2 ||
+                    normalizeStudentClass(editStudentClass).length < 1
+                  }
+                  className="flex-1 py-2.5 rounded-xl bg-[#3F51B5] hover:bg-[#303F9F] text-white text-xs font-bold disabled:opacity-50"
+                >
+                  {isSavingStudent ? 'Сохранение...' : 'Сохранить'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isDeleteStudentOpen && student && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#1C1F26] w-full max-w-sm rounded-[28px] p-6 shadow-2xl border border-red-200 dark:border-red-900/60 text-center space-y-4">
+            <div className="w-12 h-12 rounded-full bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1.5">
+              <h3 className="font-extrabold text-base text-gray-900 dark:text-white">
+                Удалить ученика?
+              </h3>
+              <p className="text-xs text-gray-600 dark:text-gray-300">
+                Вы действительно хотите удалить <b>{student.full_name}</b> ({student.grade_class})?
+              </p>
+              <p className="text-[11px] text-red-600/90 dark:text-red-400">
+                Будут безвозвратно удалены: прогресс по книгам ({progressRows.length}), сообщения ({messages.length}) и корректировки баллов ({pointAdjustments.length}).
+              </p>
+            </div>
+
+            {deleteStudentError && (
+              <div className="p-2.5 rounded-xl bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 text-xs font-semibold text-left">
+                {deleteStudentError}
+              </div>
+            )}
+
+            <div className="flex gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setIsDeleteStudentOpen(false)}
+                disabled={isDeletingStudent}
+                className="flex-1 py-2.5 rounded-xl border border-gray-300 dark:border-gray-700 text-xs font-bold"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteStudent}
+                disabled={isDeletingStudent}
+                className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold disabled:opacity-50"
+              >
+                {isDeletingStudent ? 'Удаление...' : 'Да, удалить'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
