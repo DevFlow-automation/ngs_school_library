@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
 import { GradeFilter, CategoryFilter, SortOption, ReaderTheme, ReaderFont } from '@/types/book';
 import { evaluateBookCompletion } from '@/lib/readingMetrics';
+import { computeProgressPercent } from '@/lib/bookPagination';
 import { sumPointAdjustments, type StudentPointAdjustment } from '@/lib/pointAdjustments';
 import { normalizeStudentClass, normalizeStudentName } from '@/lib/studentNormalize';
 
@@ -141,7 +142,7 @@ interface ReadingState {
   openReader: (bookId: string, chapterIndex?: number) => void;
   closeReader: () => void;
   setChapterIndex: (index: number) => void;
-  saveProgress: (bookId: string, chapterIndex: number, pageIndex: number, totalChapters: number, totalPages: number) => void;
+  saveProgress: (bookId: string, chapterIndex: number, pageIndex: number, totalChapters: number, totalPages: number, startChapterIndex?: number) => void;
   recordReadingMetrics: (bookId: string, delta: ReadingMetricDelta) => void;
   setReaderFontSize: (size: number) => void;
   setReaderFontFamily: (font: ReaderFont) => void;
@@ -378,11 +379,15 @@ export const useReadingStore = create<ReadingState>()(
       closeReader: () => set({ activeBookId: null }),
       setChapterIndex: (index) => set({ activeChapterIndex: index }),
 
-      saveProgress: (bookId, chapterIndex, pageIndex, totalChapters, totalPages) => {
+      saveProgress: (bookId, chapterIndex, pageIndex, totalChapters, totalPages, startChapterIndex = 0) => {
         const { student, myShelfIds, readingProgress } = get();
-        const chWeight = 1 / Math.max(totalChapters, 1);
-        const pageProgress = (pageIndex + 1) / Math.max(totalPages, 1);
-        const rawPercent = Math.min(100, Math.max(1, Math.round((chapterIndex * chWeight + pageProgress * chWeight) * 100)));
+        const rawPercent = computeProgressPercent(
+          chapterIndex,
+          pageIndex,
+          totalChapters,
+          totalPages,
+          startChapterIndex
+        );
         const prev = readingProgress[bookId];
 
         const readingSeconds = prev?.readingSeconds || 0;

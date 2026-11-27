@@ -1,4 +1,5 @@
 import type { Chapter } from '@/types/book';
+import { getBookFrontMatterInfo } from '@/lib/frontMatter';
 
 export const TARGET_CHARS_PER_PAGE = 1100;
 
@@ -43,16 +44,27 @@ export function computeProgressPercent(
   chapterIndex: number,
   pageIndex: number,
   totalChapters: number,
-  totalPagesInChapter: number
+  totalPagesInChapter: number,
+  startChapterIndex = 0
 ): number {
   const safeChapters = Math.max(1, Math.trunc(totalChapters || 1));
   const safePages = Math.max(1, Math.trunc(totalPagesInChapter || 1));
   const clampedChapter = Math.max(0, Math.min(safeChapters - 1, Math.trunc(chapterIndex || 0)));
   const clampedPage = Math.max(0, Math.min(safePages - 1, Math.trunc(pageIndex || 0)));
+  const safeStart = Math.max(0, Math.min(safeChapters - 1, Math.trunc(startChapterIndex || 0)));
 
-  const chWeight = 1 / safeChapters;
+  if (clampedChapter < safeStart) {
+    return 1;
+  }
+
+  const effectiveChapters = Math.max(1, safeChapters - safeStart);
+  const effectiveChapterIndex = clampedChapter - safeStart;
+  const chWeight = 1 / effectiveChapters;
   const pageProgress = (clampedPage + 1) / safePages;
-  return Math.min(100, Math.max(1, Math.round((clampedChapter * chWeight + pageProgress * chWeight) * 100)));
+  return Math.min(
+    100,
+    Math.max(1, Math.round((effectiveChapterIndex * chWeight + pageProgress * chWeight) * 100))
+  );
 }
 
 export interface BookPositionStats {
@@ -94,13 +106,15 @@ export function computeBookPositionStats(
     pagesBeforeChapter += chapterPageCounts[i];
   }
 
+  const { mainContentStartIndex } = getBookFrontMatterInfo(chapters);
   const cumulativePageNumber = pagesBeforeChapter + clampedPageIndex + 1;
   const turnsToReachPosition = Math.max(0, cumulativePageNumber - 1);
   const calculatedPercent = computeProgressPercent(
     clampedChapterIndex,
     clampedPageIndex,
     totalChapters,
-    pagesInCurrentChapter
+    pagesInCurrentChapter,
+    mainContentStartIndex
   );
 
   return {

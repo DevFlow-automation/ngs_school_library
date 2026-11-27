@@ -5,7 +5,8 @@ export const dynamic = 'force-dynamic';
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { compareBookGrades, fetchRawBooksMetadataForAdmin, invalidateBooksCache } from '@/lib/booksService';
-import type { GradeFilter } from '@/types/book';
+import type { Chapter, GradeFilter } from '@/types/book';
+import { getBookFrontMatterInfo } from '@/lib/frontMatter';
 import {
   Upload, CheckCircle2, FileText, Sparkles, Palette,
   Search, Trash2, Edit3, X, Plus, BookOpen, AlertTriangle,
@@ -120,7 +121,8 @@ export default function AdminDashboardPage() {
   const [synopsis, setSynopsis] = useState('');
   const [isCurriculum, setIsCurriculum] = useState(false);
   const [selectedGradient, setSelectedGradient] = useState(COVER_GRADIENTS[0].value);
-  const [parsedChapters, setParsedChapters] = useState<{ title: string; paragraphs: string[] }[]>([]);
+  const [parsedChapters, setParsedChapters] = useState<Chapter[]>([]);
+  const [showParsedChapters, setShowParsedChapters] = useState(false);
   const [fileName, setFileName] = useState('');
   const [loadingUpload, setLoadingUpload] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'success' | 'error'>('idle');
@@ -551,7 +553,13 @@ export default function AdminDashboardPage() {
           }
         });
 
-        setParsedChapters(extractedChapters);
+        const detectedFrontMatter = getBookFrontMatterInfo(extractedChapters);
+        const annotatedChapters: Chapter[] = extractedChapters.map((ch, idx) => ({
+          ...ch,
+          isFrontMatter: detectedFrontMatter.frontMatterIndices.has(idx),
+        }));
+        setParsedChapters(annotatedChapters);
+        setShowParsedChapters(detectedFrontMatter.frontMatterIndices.size > 0);
       } catch (err) {
         console.error('Ошибка парсинга FB2:', err);
       }
@@ -588,6 +596,7 @@ export default function AdminDashboardPage() {
       setSynopsis('');
       setIsCurriculum(false);
       setParsedChapters([]);
+      setShowParsedChapters(false);
       setFileName('');
       invalidateBooksCache();
       await fetchBooks();
@@ -1044,15 +1053,93 @@ export default function AdminDashboardPage() {
                 </label>
               </div>
 
-              {parsedChapters.length > 0 && (
-                <div className="p-4 rounded-2xl bg-emerald-50 text-emerald-800 text-xs font-semibold flex items-center justify-between border border-emerald-200">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-emerald-600" />
-                    <span>Распознано глав/произведений: <b>{parsedChapters.length}</b></span>
+              {parsedChapters.length > 0 && (() => {
+                const frontMatterCount = parsedChapters.filter((ch) => ch.isFrontMatter).length;
+                return (
+                  <div className="rounded-2xl bg-emerald-50 dark:bg-emerald-950/20 text-emerald-900 dark:text-emerald-200 text-xs border border-emerald-200 dark:border-emerald-900/50 overflow-hidden">
+                    <div className="p-4 font-semibold flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>
+                          Распознано глав/произведений: <b>{parsedChapters.length}</b>
+                        </span>
+                        {frontMatterCount > 0 && (
+                          <span className="px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-200 text-[11px] font-bold">
+                            Предисловие: {frontMatterCount}
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowParsedChapters((prev) => !prev)}
+                        className="px-2.5 py-1 rounded-xl bg-white/80 dark:bg-black/25 border border-emerald-300/70 dark:border-emerald-800 text-[11px] font-bold text-emerald-800 dark:text-emerald-200 hover:bg-white transition-colors"
+                      >
+                        {showParsedChapters ? 'Скрыть главы' : 'Настроить предисловие / главы'}
+                      </button>
+                    </div>
+
+                    {showParsedChapters && (
+                      <div className="px-4 pb-4 pt-1 border-t border-emerald-200/70 dark:border-emerald-900/40 space-y-2">
+                        <p className="text-[11px] text-emerald-800/80 dark:text-emerald-300/80">
+                          Главы с отметкой «Предисловие» можно пропускать при старте чтения без предупреждения о перескоке.
+                        </p>
+                        <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+                          {parsedChapters.map((ch, idx) => (
+                            <div
+                              key={`${idx}-${ch.title}`}
+                              className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white/85 dark:bg-[#16181F] border border-emerald-200/60 dark:border-gray-800"
+                            >
+                              <div className="min-w-0 flex items-center gap-2">
+                                <span className="text-[10px] font-mono text-gray-400 shrink-0">
+                                  #{idx + 1}
+                                </span>
+                                <span className="truncate font-semibold text-gray-800 dark:text-gray-200">
+                                  {ch.title}
+                                </span>
+                                <span className="text-[10px] text-gray-400 shrink-0">
+                                  ({ch.paragraphs.length} абз.)
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setParsedChapters((prev) =>
+                                      prev.map((item, i) =>
+                                        i === idx ? { ...item, isFrontMatter: !item.isFrontMatter } : item
+                                      )
+                                    )
+                                  }
+                                  className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+                                    ch.isFrontMatter
+                                      ? 'bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700'
+                                      : 'bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-amber-50'
+                                  }`}
+                                  title="Отметить главу как предисловие (пропуск не вызовет предупреждение)"
+                                >
+                                  {ch.isFrontMatter ? '✓ Предисловие' : 'Предисловие'}
+                                </button>
+                                {parsedChapters.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setParsedChapters((prev) => prev.filter((_, i) => i !== idx))
+                                    }
+                                    className="p-1 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                                    title="Удалить эту секцию из книги"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <span className="text-[11px] font-mono opacity-80">Готово к публикации</span>
-                </div>
-              )}
+                );
+              })()}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>

@@ -33,6 +33,10 @@ import {
   getUnlockableThemesForAgeGroup,
 } from '@/lib/gamification';
 import { paginateChapterParagraphs } from '@/lib/bookPagination';
+import {
+  getBookFrontMatterInfo,
+  isAllowedPrefaceOrInitialStartJump,
+} from '@/lib/frontMatter';
 
 const AUTO_FLUSH_MS = 15000;
 const CHECK_MIN_PAGES = 10;
@@ -285,6 +289,12 @@ export const ReaderModal: React.FC = () => {
   const totalChapters = book?.chapters?.length || 0;
   const totalPages = pages.length;
 
+  const frontMatterInfo = useMemo(
+    () => getBookFrontMatterInfo(book?.chapters),
+    [book?.chapters]
+  );
+  const mainContentStartIndex = frontMatterInfo.mainContentStartIndex;
+
   useEffect(() => {
     if (activeBookId && isBookReady && readyBookId !== activeBookId) {
       const savedProgress = readingProgress[activeBookId];
@@ -325,9 +335,25 @@ export const ReaderModal: React.FC = () => {
 
   useEffect(() => {
     if (activeBookId && readyBookId === activeBookId && book && totalChapters > 0) {
-      saveProgress(activeBookId, activeChapterIndex, currentPage, totalChapters, totalPages);
+      saveProgress(
+        activeBookId,
+        activeChapterIndex,
+        currentPage,
+        totalChapters,
+        totalPages,
+        mainContentStartIndex
+      );
     }
-  }, [activeBookId, readyBookId, book, activeChapterIndex, currentPage, totalChapters, totalPages]);
+  }, [
+    activeBookId,
+    readyBookId,
+    book,
+    activeChapterIndex,
+    currentPage,
+    totalChapters,
+    totalPages,
+    mainContentStartIndex,
+  ]);
 
   // Активный таймер чтения: пауза при скрытии вкладки, AFK-пауза (2 мин) и лимит 3 мин/страница
   useEffect(() => {
@@ -823,12 +849,28 @@ export const ReaderModal: React.FC = () => {
     if (idx > activeChapterIndex) {
       const baselineChapter = Math.max(activeChapterIndex, maxVisitedChapterRef.current);
       const jumpSize = idx - baselineChapter;
+      const latest = useReadingStore.getState().readingProgress[book.id];
+      const pagesTurned = latest?.pagesTurned || 0;
 
-      if (jumpSize >= 2) {
+      const isAllowedStartOrPreface = isAllowedPrefaceOrInitialStartJump({
+        targetChapterIndex: idx,
+        totalChapters,
+        mainContentStartIndex,
+        pagesTurned,
+      });
+
+      if (isAllowedStartOrPreface) {
+        // Пропуск предисловия или выбор начальной главы в начале книги не считается нарушением
+        maxVisitedChapterRef.current = Math.max(maxVisitedChapterRef.current, idx);
+        fastChapterStreakRef.current = 0;
+      } else if (jumpSize >= 2) {
         chapterSkipCountRef.current += 1;
-        const latest = useReadingStore.getState().readingProgress[book.id];
         const readingSec = latest?.readingSeconds || 0;
-        const approxPercent = Math.round(((idx + 1) / Math.max(totalChapters, 1)) * 100);
+        const effectiveTotalChapters = Math.max(1, totalChapters - mainContentStartIndex);
+        const effectiveTargetChapter = Math.max(0, idx - mainContentStartIndex);
+        const approxPercent = Math.round(
+          ((effectiveTargetChapter + 1) / effectiveTotalChapters) * 100
+        );
         const shouldSendMessage =
           jumpSize >= 3 ||
           chapterSkipCountRef.current >= 2 ||
@@ -853,7 +895,10 @@ export const ReaderModal: React.FC = () => {
         }
       } else if (idx === activeChapterIndex + 1) {
         maxVisitedChapterRef.current = Math.max(maxVisitedChapterRef.current, idx);
-        if (chapterElapsedSec < fastChapterThreshold) {
+        if (activeChapterIndex < mainContentStartIndex) {
+          // Переход из предисловия не считается быстрым пролистыванием
+          fastChapterStreakRef.current = 0;
+        } else if (chapterElapsedSec < fastChapterThreshold) {
           fastChapterStreakRef.current += 1;
           if (fastChapterStreakRef.current >= 3) {
             showLiveWarning(
@@ -1196,7 +1241,10 @@ export const ReaderModal: React.FC = () => {
     const chapterElapsedSec = Math.max(0.1, Math.round((chapterActiveMsRef.current / 1000) * 10) / 10);
     const chapterChars = (currentChapter.paragraphs || []).join(' ').length;
     const fastChapterThreshold = getFastChapterThresholdSeconds(chapterChars);
-    const isFastChapter = chapterElapsedSec < fastChapterThreshold;
+    const isFastChapter =
+      activeChapterIndex < mainContentStartIndex
+        ? false
+        : chapterElapsedSec < fastChapterThreshold;
 
     const inspection = inspectClickForAutoclicker(e, elapsedSec, isFastTurn);
     if (inspection.blockedScript) {
@@ -1366,19 +1414,35 @@ export const ReaderModal: React.FC = () => {
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {filteredChapters.map((ch) => {
               const isSelected = ch.index === activeChapterIndex;
+              const isFrontMatter = frontMatterInfo.frontMatterIndices.has(ch.index);
               return (
                 <button
                   key={ch.index}
                   onClick={() => handleSelectChapter(ch.index)}
-                  className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-all flex items-center justify-between ${
+                  className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-all flex items-center justify-between gap-2 ${
                     isSelected
                       ? 'bg-indigo-600 text-white font-bold shadow-sm'
-                      : 'hover:bg-black/5 dark:hover:bg-white/5 opacity-80'
+                      : isFrontMatter
+                        ? 'hover:bg-black/5 dark:hover:bg-white/5 opacity-65'
+                        : 'hover:bg-black/5 dark:hover:bg-white/5 opacity-80'
                   }`}
                 >
-                  <span className="truncate pr-2">{ch.title}</span>
-                  <span className={`text-[10px] font-mono shrink-0 ${isSelected ? 'text-indigo-200' : 'opacity-40'}`}>
-                    #{ch.index + 1}
+                  <span className="truncate">{ch.title}</span>
+                  <span className="flex items-center gap-1.5 shrink-0">
+                    {isFrontMatter && (
+                      <span
+                        className={`text-[9px] px-1.5 py-0.5 rounded-md font-semibold ${
+                          isSelected
+                            ? 'bg-white/20 text-white'
+                            : 'bg-black/5 dark:bg-white/10 opacity-75'
+                        }`}
+                      >
+                        Вступл.
+                      </span>
+                    )}
+                    <span className={`text-[10px] font-mono ${isSelected ? 'text-indigo-200' : 'opacity-40'}`}>
+                      #{ch.index + 1}
+                    </span>
                   </span>
                 </button>
               );

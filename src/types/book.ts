@@ -16,6 +16,8 @@ export type ReaderFont = 'serif' | 'sans';
 export interface Chapter {
   title: string;
   paragraphs: string[];
+  /** Необязательная пометка вступительной главы (предисловие, введение, от автора и т.п.) */
+  isFrontMatter?: boolean;
 }
 
 export interface Book {
